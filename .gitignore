@@ -1,0 +1,34 @@
+# Firmware build output (firmware/build/, and any other build/ dir)
+build/
+*.uf2
+*.elf
+*.bin
+*.hex
+*.map
+*.dis
+CMakeCache.txt
+CMakeFiles/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+venv/
+.venv/
+env/
+.env
+*.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Editors / IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
