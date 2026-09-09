@@ -18,21 +18,32 @@ does angle conversion / pass-fail analysis. Design background:
 
 Ardu-stim-style: a small table of named crank/cam wheel definitions
 (`firmware/src/profiles.c`), picked from the boot menu before the mode
-menu. Covers the common missing-tooth decoder family:
+menu. Teeth/missing-tooth counts are copied from real decoder patterns in
+[ardu-stim's `wheel_defs.h`](https://github.com/speeduino/Ardu-Stim/blob/master/ardustim/ardustim/wheel_defs.h)
+(GPLv3) — only the entries that fit this tool's model (one crank wheel
+with a trailing missing-tooth gap, plus one cam sync pulse):
 
-| Profile | Teeth | Missing |
-|---|---:|---:|
-| 60-2 (default) | 60 | 2 |
-| 36-1 | 36 | 1 |
-| 24-1 | 24 | 1 |
-| 12-1 | 12 | 1 |
-| 60-0 (no missing tooth) | 60 | 0 |
+| Profile | Teeth | Missing | ardu-stim source |
+|---|---:|---:|---|
+| 60-2 (Bosch/GM) | 60 | 2 | `SIXTY_MINUS_TWO_WITH_CAM` |
+| 36-1 (Ford/Mazda EDIS) | 36 | 1 | `THIRTY_SIX_MINUS_ONE` |
+| 24-1 | 24 | 1 | `TWENTY_FOUR_MINUS_ONE` |
+| 12-1 | 12 | 1 | `TWELVE_MINUS_ONE_WITH_CAM` |
+| 6-1 (V-twin) | 6 | 1 | `SIX_MINUS_ONE_WITH_CAM` |
+| 4-1 | 4 | 1 | `FOUR_MINUS_ONE_WITH_CAM` |
+| 24 even tooth (no gap) | 24 | 0 | `TWENTY_FOUR_WITH_CAM` |
+
+The cam pulse itself (rise/fall angle) is this tool's own single sync
+window, not a copy of ardu-stim's cam signal — ardu-stim's is often
+narrower or multi-pulse, which this tool's rev0/rev1 disambiguation
+doesn't need (see `capture_analysis.c`).
 
 Add a profile by appending a `{name, teeth_per_rev, missing_teeth,
 cam_rise_deg, cam_fall_deg}` entry to `crankcam_profiles[]` in
 `firmware/src/profiles.c` — no other file needs to change. A wheel outside
-the missing-tooth family (e.g. Nissan 360, Subaru 7+1) would need a more
-general per-tooth-angle pattern description, not implemented here.
+the missing-tooth family (e.g. Nissan 360, Subaru 7+1, Miata 99-05's
+uneven-width teeth) would need a more general per-tooth-angle pattern
+description, not implemented here.
 
 ## Firmware modes
 
