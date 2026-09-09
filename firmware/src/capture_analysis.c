@@ -3,6 +3,7 @@
 #include "capture_analysis.h"
 
 uint32_t capture_buf[CAPTURE_SAMPLES];
+uint32_t capture_samples_used;
 
 // Collects up to max_out timestamps (ms) of edges on `ch` matching
 // want_rising. Returns the count found (may exceed max_out; only the
@@ -11,7 +12,7 @@ static uint find_edge_times(uint ch, bool want_rising, double sample_period_ms,
                              double *out, uint max_out) {
     uint32_t prev = capture_buf[0] & (1u << ch);
     uint count = 0;
-    for (uint32_t i = 1; i < CAPTURE_SAMPLES; i++) {
+    for (uint32_t i = 1; i < capture_samples_used; i++) {
         uint32_t cur = capture_buf[i] & (1u << ch);
         if (cur != prev) {
             bool is_rising = (cur != 0);
@@ -30,7 +31,7 @@ void print_channel_edges(uint ch, double sample_period_ms) {
     uint rising = 0, falling = 0;
     uint printed = 0;
     printf("  ch%u: ", ch);
-    for (uint32_t i = 1; i < CAPTURE_SAMPLES; i++) {
+    for (uint32_t i = 1; i < capture_samples_used; i++) {
         uint32_t cur = capture_buf[i] & (1u << ch);
         if (cur != prev) {
             bool is_rising = (cur != 0);
@@ -283,4 +284,31 @@ void evaluate_spec(const EcuOutputSpec *spec, double sample_period_ms,
     }
 
     printf("  %s\n", pass ? "PASS" : "-> FAIL (see above)");
+}
+
+void report_pulse_angles(uint channel_count, double sample_period_ms,
+                          const double *refs, uint n_refs, int rev0_window) {
+    for (uint ch = 0; ch < channel_count; ch++) {
+        double rise_t, fall_t;
+        uint n_rise = find_edge_times(ch, true, sample_period_ms, &rise_t, 1);
+        uint n_fall = find_edge_times(ch, false, sample_period_ms, &fall_t, 1);
+
+        if (n_rise == 0 && n_fall == 0) {
+            printf("  ch%u: not detected\n", ch);
+            continue;
+        }
+
+        printf("  ch%u:", ch);
+        if (n_rise > 0) {
+            printf(" rise=%.2fdeg", convert_to_angle(rise_t, refs, n_refs, rev0_window));
+        } else {
+            printf(" rise=--");
+        }
+        if (n_fall > 0) {
+            printf(" fall=%.2fdeg", convert_to_angle(fall_t, refs, n_refs, rev0_window));
+        } else {
+            printf(" fall=--");
+        }
+        printf("\n");
+    }
 }

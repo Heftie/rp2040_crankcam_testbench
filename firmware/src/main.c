@@ -5,6 +5,7 @@
 //      1) continuous double-buffered generation, RPM profile   (normal operation)
 //      2) single-shot 2-rev diagnostic, constant RPM           (scope bring-up)
 //      3) one-shot gen + 6ch capture + angle + pass/fail        (acquisition test)
+//      4) continuous one-shot gen + capture, per-cycle report   (live angle feed)
 //
 // A selected mode runs forever (matches how each was validated standalone
 // on real hardware) -- to pick a different profile or mode, reset/replug
@@ -20,6 +21,7 @@
 #include "mode_continuous.h"
 #include "mode_singleshot.h"
 #include "mode_capture.h"
+#include "mode_live.h"
 
 static const CrankCamProfile *select_profile_menu(void) {
     assert(crankcam_profile_count <= 9); // menu below assumes a single '1'..'9' digit
@@ -44,13 +46,14 @@ static int select_mode_menu(void) {
     printf(" 1) continuous double-buffered generation (normal operation)\n");
     printf(" 2) single-shot 2-rev diagnostic, constant RPM (scope bring-up)\n");
     printf(" 3) capture test: one-shot gen + 6ch capture + angle + pass/fail\n");
+    printf(" 4) live capture: per-cycle rise/fall angle report, up to 7000 RPM\n");
     printf("select mode (reset/replug to change profile or mode later): ");
     fflush(stdout);
 
     int c;
     do {
         c = getchar();
-    } while (c != '1' && c != '2' && c != '3');
+    } while (c != '1' && c != '2' && c != '3' && c != '4');
     printf("%c\n", (char)c);
     return c;
 }
@@ -68,8 +71,10 @@ int main(void) {
         run_mode_continuous();
     } else if (mode == '2') {
         run_mode_singleshot();
-    } else {
+    } else if (mode == '3') {
         run_mode_capture_test();
+    } else {
+        run_mode_live();
     }
     // unreachable: each mode loops forever
 }

@@ -22,6 +22,14 @@
 
 extern uint32_t capture_buf[CAPTURE_SAMPLES];
 
+// Number of capture_buf[] entries actually holding this capture's samples
+// (<= CAPTURE_SAMPLES). Every DMA-into-capture_buf call site must set
+// this to its own transfer length before calling any function below --
+// they all scan capture_buf[0..capture_samples_used) rather than the
+// full buffer, so a shorter capture doesn't pick up a previous, longer
+// capture's stale trailing samples.
+extern uint32_t capture_samples_used;
+
 // Prints each channel's first few edges plus rising/falling edge counts.
 void print_channel_edges(uint ch, double sample_period_ms);
 
@@ -51,5 +59,12 @@ typedef struct {
 // prints PASS/FAIL with the specific reason(s).
 void evaluate_spec(const EcuOutputSpec *spec, double sample_period_ms,
                     const double *refs, uint n_refs, int rev0_window);
+
+// Single-pulse-per-channel live report: for each of channel_count
+// channels, prints the first rising and falling edge angle found (or
+// "not detected" if neither is present). No tolerance/pass-fail --
+// just what was captured, for a per-cycle live feed.
+void report_pulse_angles(uint channel_count, double sample_period_ms,
+                          const double *refs, uint n_refs, int rev0_window);
 
 #endif

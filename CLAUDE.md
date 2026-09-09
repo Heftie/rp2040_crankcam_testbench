@@ -32,7 +32,7 @@ diagnostic modes (see below).
 
 `firmware/src/main.c` is only the boot menu: it reads two keypresses over
 USB serial — first a crank/cam profile, then a mode — and dispatches into
-one of three mode modules. The chosen profile/mode then run forever (reset
+one of four mode modules. The chosen profile/mode then run forever (reset
 board to pick different ones). Source layout:
 
 - `profiles.c/.h` — `crankcam_profiles[]`, the selectable trigger-wheel
@@ -45,14 +45,19 @@ board to pick different ones). Source layout:
   (`MAX_TEETH_PER_REV`). Shared by all three modes — this is where the
   RPM-profile-to-cycle-count math lives.
 - `gen_fire.c/.h` — `fire_gen_one_shot`, the reset-and-fire sequence for a
-  single crank/cam burst. Shared by modes 2 and 3.
+  single crank/cam burst. Shared by modes 2 and 3 (mode 4 has its own
+  inline copy of this sequence -- see below).
 - `mode_continuous.c/.h` — mode 1.
 - `mode_singleshot.c/.h` — mode 2.
-- `capture_analysis.c/.h` — `capture_buf[]`, edge finding, angle
-  conversion (`compute_crank_reference`/`convert_to_angle`), and pass/fail
-  evaluation (`evaluate_spec`/`EcuOutputSpec`). Used only by mode 3.
+- `capture_analysis.c/.h` — `capture_buf[]` + `capture_samples_used` (how
+  much of it the current capture actually filled), edge finding, angle
+  conversion (`compute_crank_reference`/`convert_to_angle`), pass/fail
+  evaluation (`evaluate_spec`/`EcuOutputSpec`, mode 3 only), and
+  `report_pulse_angles` (single-pulse-per-channel live report, mode 4
+  only).
 - `mode_capture.c/.h` — mode 3 driver (PIO/DMA setup + main loop); calls
   into `capture_analysis.h`.
+- `mode_live.c/.h` — mode 4 driver.
 
 Mode summaries:
 
@@ -72,6 +77,20 @@ Mode summaries:
    (`compute_crank_reference`/`convert_to_angle`), and runs pass/fail
    checks (`evaluate_spec`) against `EcuOutputSpec` windows (expected
    rise/fall angle, tolerance, expected 720° half).
+4. **Mode 4 — live capture.** Same one-shot gen+capture mechanics as mode
+   3, but automatic and repeating: a constant-RPM sub-menu (1000/3000/5000
+   /7000) picks the simulated RPM, the capture DMA transfer length is
+   sized to one 720° cycle at that RPM (`REVS_PER_CYCLE * 60000.0 / rpm`,
+   25% margin, capped at `CAPTURE_SAMPLES`) instead of mode 3's fixed
+   150 ms, and after every cycle `report_pulse_angles` prints each
+   channel's rise/fall angle. Each pass resets/reconfigures PIO+DMA in
+   software before re-firing (same reset sequence as `fire_gen_one_shot`,
+   inlined rather than shared since mode 4 also owns the capture side of
+   the reset) -- not hardware-gapless like mode 1, so at high RPM the
+   report cadence can run slower than real time if a cycle's print takes
+   longer than the cycle period; each report is still correct for that
+   RPM's signal timing regardless. A non-blocking `getchar_timeout_us(0)`
+   poll each iteration lets Enter stop the loop without blocking capture.
 
 Both generation and capture share one event-table convention: each event
 is 2 FIFO words (pin state, delay-in-cycles), consumed by the `event_gen`
@@ -115,7 +134,13 @@ generation and angle conversion:
   literal kept in sync with `CAPTURE_SAMPLE_HZ * CAPTURE_DURATION_MS/1000`
   by hand (a computed expression here previously made `capture_buf` a
   variably-modified file-scope array — undefined behavior, silent boot
-  crash).
+  crash). `CAPTURE_SAMPLES` is also the hard cap on any single capture
+  (mode 4 clamps its per-RPM sample count to it).
+- `capture_samples_used` (runtime) — how many of `capture_buf[]`'s entries
+  the current capture actually holds; every edge-scanning function in
+  `capture_analysis.c` loops over this, not `CAPTURE_SAMPLES`, so a call
+  site that DMAs fewer samples (mode 4) must set it before calling any of
+  them, or edge-finding will read a previous, longer capture's stale tail.
 
 Mode 3's default hardware setup is loopback: wire GPIO2→GPIO6 (crank) and
 GPIO3→GPIO7 (cam) so `evaluate_spec` has known-good data to check against.

@@ -21,6 +21,7 @@ add_executable(crankcam_testbench
     src/mode_singleshot.c
     src/capture_analysis.c
     src/mode_capture.c
+    src/mode_live.c
 )
 
 pico_generate_pio_header(crankcam_testbench

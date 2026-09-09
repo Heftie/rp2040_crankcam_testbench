@@ -62,6 +62,16 @@ profile or mode; reset/replug to pick different ones):
    evaluates two example ECU-output specs (expected rise/fall angle,
    tolerance, expected 720° half) against the captured edges, printing
    PASS/FAIL per check.
+4. **Live capture** — like mode 3, but repeats automatically (no Enter per
+   shot; press Enter once to start, again to stop) and sizes the capture
+   window to one 720° cycle at a chosen constant RPM (1000/3000/5000/7000)
+   instead of a fixed 150 ms window. After every cycle, prints each of the
+   6 channels' rise/fall angle (or "not detected") — no pass/fail
+   tolerance, just what was captured. Each pass re-arms generation and
+   capture in software, so it isn't hardware-gapless like mode 1 — at
+   7000 RPM (17 ms/cycle) the report cadence may run slower than real
+   time if printing a cycle's report takes longer than the cycle itself,
+   but each report is still accurate for that RPM's signal timing.
 
 ## Layout
 
@@ -73,8 +83,9 @@ firmware/
   src/gen_fire.c/.h       one-shot generator fire (modes 2, 3)
   src/mode_continuous.c/.h  mode 1
   src/mode_singleshot.c/.h  mode 2
-  src/capture_analysis.c/.h edge/angle/pass-fail logic (mode 3)
+  src/capture_analysis.c/.h edge/angle/pass-fail/live-report logic (modes 3, 4)
   src/mode_capture.c/.h   mode 3 driver
+  src/mode_live.c/.h      mode 4 driver
   src/event_gen.pio       crank/cam waveform generator (PIO), used by all modes
   src/capture.pio         6-channel edge capture (PIO), used by mode 3
   CMakeLists.txt
