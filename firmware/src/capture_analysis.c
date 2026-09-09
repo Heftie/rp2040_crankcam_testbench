@@ -27,7 +27,6 @@ static uint find_edge_times(uint ch, bool want_rising, double sample_period_ms,
 }
 
 #define MAX_CRANK_RISING 200
-#define MAX_CAM_EDGES 4
 
 // Doc section 8: reference = first crank tooth after the missing-tooth
 // gap = angle 0deg. C_rev = reference-to-reference duration (one full
@@ -60,26 +59,54 @@ static uint find_crank_references(const double *rising, uint n, double *refs, ui
     return count;
 }
 
-// Converts timestamp t (ms) to an absolute crank angle (deg) using the
-// reference windows in refs[0..n_refs-1]. rev0_window is the index of
-// the window that contains the cam pulse (angle 0-360deg); other
-// windows are numbered relative to it. Falls back to reusing the last
-// full window's C_rev for a trailing timestamp with no closing reference
-// -- each capture buffer covers ~1 cycle, so the final revolution's
-// closing gap edge often lands just past this buffer's end.
-static double convert_to_angle(double t, const double *refs, uint n_refs, int rev0_window) {
+// Finds which reference window [refs[w], refs[w+1]) contains t, with a
+// trailing extension past the last window for a timestamp with no
+// closing reference yet -- each capture buffer covers ~1 cycle, so the
+// final revolution's closing gap edge often lands just past this
+// buffer's end. Returns the window index and, via *extra_revs_out, how
+// many whole extra revolutions (of that window's own measured length)
+// t is estimated to be past the window's start -- 0 for anything
+// actually inside the window, potentially >0 in the trailing case.
+// Returns -1 (before refs[0], or no windows at all) if t matches nothing.
+static int find_window(double t, const double *refs, uint n_refs, int *extra_revs_out) {
     for (uint w = 0; w + 1 < n_refs; w++) {
         bool in_window = (t >= refs[w] && t < refs[w + 1]);
         bool in_trailing = (w + 2 == n_refs && t >= refs[w + 1]);
         if (in_window || in_trailing) {
             double c_rev = refs[w + 1] - refs[w];
             double c_event = t - refs[w];
-            double angle_in_rev = 360.0 * c_event / c_rev;
-            int rev_index = (rev0_window >= 0) ? ((int)w - rev0_window) : 0;
-            return angle_in_rev + rev_index * 360.0;
+            *extra_revs_out = (int)(c_event / c_rev); // 0 unless in_trailing pushed past a whole c_rev
+            return (int)w;
         }
     }
-    return -1.0; // before refs[0] or no windows at all
+    return -1;
+}
+
+// Converts timestamp t (ms) to an absolute crank angle (deg) using the
+// reference windows in refs[0..n_refs-1]. rev0_window is the index of
+// the window that contains the cam pulse (angle 0-360deg); other
+// windows are numbered relative to it (unchanged from before). What's
+// new is subtracting find_window()'s extra_revs from angle_in_rev
+// itself, keeping it within its own 0-360deg span even when t is a
+// trailing timestamp that's actually landed a whole revolution (or
+// more) past window w's start -- without this, such a timestamp's angle
+// was reported bumped up by a full 360deg per revolution it had already
+// crossed (e.g. cam's own pulse, 120/300deg, reported as 480/660deg
+// whenever the last captured crank reference happened to fall before
+// it). rev0_window itself is computed the same way (see
+// compute_crank_reference), from the exact same window index w this
+// returns for that same cam edge -- so w - rev0_window is always exactly
+// 0 for cam's own angle, regardless of extra_revs.
+static double convert_to_angle(double t, const double *refs, uint n_refs, int rev0_window) {
+    int extra_revs = 0;
+    int w = find_window(t, refs, n_refs, &extra_revs);
+    if (w < 0) return -1.0;
+
+    double c_rev = refs[w + 1] - refs[w];
+    double c_event = t - refs[w];
+    double angle_in_rev = 360.0 * (c_event / c_rev - extra_revs);
+    int rev_index = (rev0_window >= 0) ? (w - rev0_window) : 0;
+    return angle_in_rev + rev_index * 360.0;
 }
 
 bool compute_crank_reference(double sample_period_ms, double *refs, uint *n_refs_out,
@@ -95,20 +122,19 @@ bool compute_crank_reference(double sample_period_ms, double *refs, uint *n_refs
         return false;
     }
 
-    double cam_rise[MAX_CAM_EDGES];
-    uint n_cam_rise = find_edge_times(1, true, sample_period_ms, cam_rise, MAX_CAM_EDGES);
-    if (n_cam_rise > MAX_CAM_EDGES) n_cam_rise = MAX_CAM_EDGES;
-
     // Which reference window contains the cam pulse identifies rev 0
-    // (cam is silent through rev 1 by design).
+    // (cam is silent through rev 1 by design). Uses find_window() --
+    // the same lookup report_pulse_angles' later convert_to_angle() call
+    // for this exact same edge will use -- so the two can never disagree
+    // about which window this is; only the first rising edge is used,
+    // since find_edge_times(..., max_out=1) is also what report_pulse_angles
+    // uses for channel 1's own rise, so both see the identical timestamp.
+    double cam_rise;
+    uint n_cam_rise = find_edge_times(1, true, sample_period_ms, &cam_rise, 1);
     int rev0_window = -1;
-    for (uint w = 0; w + 1 < n_refs && rev0_window < 0; w++) {
-        for (uint e = 0; e < n_cam_rise; e++) {
-            if (cam_rise[e] >= refs[w] && cam_rise[e] < refs[w + 1]) {
-                rev0_window = (int)w;
-                break;
-            }
-        }
+    if (n_cam_rise > 0) {
+        int extra_revs;
+        rev0_window = find_window(cam_rise, refs, n_refs, &extra_revs);
     }
 
     *n_refs_out = n_refs;
@@ -129,13 +155,20 @@ void report_pulse_angles(uint channel_count, double sample_period_ms,
         }
 
         printf("  ch%u:", ch);
+        // convert_to_angle() returns -1.0 as a "no window contains this
+        // timestamp" sentinel (e.g. an edge before refs[0] -- plausible
+        // for ch0 itself if the capture buffer happens to start mid-pulse,
+        // seeing a falling edge before any rising one). Print "--" rather
+        // than leak that sentinel as if it were a real angle.
         if (n_rise > 0) {
-            printf(" rise=%.2fdeg", convert_to_angle(rise_t, refs, n_refs, rev0_window));
+            double a = convert_to_angle(rise_t, refs, n_refs, rev0_window);
+            if (a < 0.0) printf(" rise=--"); else printf(" rise=%.2fdeg", a);
         } else {
             printf(" rise=--");
         }
         if (n_fall > 0) {
-            printf(" fall=%.2fdeg", convert_to_angle(fall_t, refs, n_refs, rev0_window));
+            double a = convert_to_angle(fall_t, refs, n_refs, rev0_window);
+            if (a < 0.0) printf(" fall=--"); else printf(" fall=%.2fdeg", a);
         } else {
             printf(" fall=--");
         }

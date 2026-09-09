@@ -80,16 +80,19 @@ its buffer boundary isn't forced to realign with generation's cycle
 boundary every cycle. Occasional sub-sample phase drift between the two
 can make channel 0 (the crank loopback channel itself) briefly land in
 the wrong reference window and print a nonsense angle. This does not
-affect any other channel in most cases — cam and any real ECU channel are
-computed relative to whichever window actually contains them, and mostly
-stay correct regardless (verified on hardware: cam held the correct
-~120°/300° angle across 175/175 cycles at 7000 RPM, including cycles
-where ch0 showed the artifact). It's not airtight, though: also observed
-on hardware, cam itself occasionally reports an angle exactly 360° off
-(e.g. 480°/660° instead of ~120°/300°) at other RPM/timing combinations —
-same underlying window-matching issue, just not limited to ch0 in every
-case. A client consuming this stream should sanity-check reported angles
-rather than trust every cycle blindly.
+affect any other channel — cam and any real ECU channel are computed
+relative to whichever window actually contains them and stay correct
+regardless (verified on hardware: cam held the correct ~120°/300° angle
+across 175/175 cycles at 7000 RPM, including cycles where ch0 showed the
+artifact).
+
+A related bug — a timestamp with no closing crank reference yet (the
+common case for the last-captured revolution in a buffer) could get
+misread as one whole revolution further along than it really was,
+reporting e.g. cam's own 120°/300° pulse as 480°/660° — was fixed in
+`capture_analysis.c`'s `convert_to_angle`/`find_window`. Re-verified on
+hardware: 150/150 cycles clean across 1000–7000 RPM with no 360°-shifted
+reading.
 
 ## Python client
 
