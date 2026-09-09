@@ -45,8 +45,8 @@ board to pick different ones). Source layout:
   (`MAX_TEETH_PER_REV`). Shared by all three modes — this is where the
   RPM-profile-to-cycle-count math lives.
 - `gen_fire.c/.h` — `fire_gen_one_shot`, the reset-and-fire sequence for a
-  single crank/cam burst. Shared by modes 2 and 3 (mode 4 has its own
-  inline copy of this sequence -- see below).
+  single crank/cam burst (modes 2 and 3), and `configure_ping_pong_channel`,
+  the TX ping-pong DMA config shared by the two continuous modes (1 and 4).
 - `mode_continuous.c/.h` — mode 1.
 - `mode_singleshot.c/.h` — mode 2.
 - `capture_analysis.c/.h` — `capture_buf[]` + `capture_samples_used` (how
@@ -68,6 +68,21 @@ Mode summaries:
    buffer that just finished playing while its twin plays, alternating an
    RPM scale each 720° cycle. Crank and cam SMs are started
    `pio_enable_sm_mask_in_sync` so they stay phase-locked.
+   Two real hardware bugs here, both fixed and scope-verified (see git
+   history): (a) a finished DMA channel's READ_ADDR/TRANS_COUNT sit at
+   "end of buffer, 0 remaining" -- `chain_to`'s hardware retrigger reuses
+   those verbatim, it does not restore them, so without an explicit rearm
+   every chain-triggered buffer after the first pair transferred zero
+   words and the pin froze. (b) cam's whole buffer (3 events, 6 words)
+   fits inside the SM's 8-word FIFO, so its own DMA completion fired
+   almost instantly -- long before the SM had actually played the buffer
+   out -- making cam's *own* `chain_to` retrigger far too early and race
+   the rearm. Fix: crank rearms itself on its own completion IRQ (still
+   self-chained, since its buffer never fits the FIFO so completion stays
+   correctly paced by real playback); cam no longer self-chains at all
+   (`chain_to` pointing at itself, pico-sdk's documented way to disable
+   it) and is instead driven explicitly, once per cycle, from that same
+   crank completion IRQ.
 2. **Mode 2 — single-shot 2-rev diagnostic.** Fixed RPM, fires one burst
    per Enter keypress via `fire_gen_one_shot`, for scope bring-up.
 3. **Mode 3 — capture test.** Fires one single-shot generation burst on
@@ -77,20 +92,38 @@ Mode summaries:
    (`compute_crank_reference`/`convert_to_angle`), and runs pass/fail
    checks (`evaluate_spec`) against `EcuOutputSpec` windows (expected
    rise/fall angle, tolerance, expected 720° half).
-4. **Mode 4 — live capture.** Same one-shot gen+capture mechanics as mode
-   3, but automatic and repeating: a constant-RPM sub-menu (1000/3000/5000
-   /7000) picks the simulated RPM, the capture DMA transfer length is
-   sized to one 720° cycle at that RPM (`REVS_PER_CYCLE * 60000.0 / rpm`,
-   25% margin, capped at `CAPTURE_SAMPLES`) instead of mode 3's fixed
-   150 ms, and after every cycle `report_pulse_angles` prints each
-   channel's rise/fall angle. Each pass resets/reconfigures PIO+DMA in
-   software before re-firing (same reset sequence as `fire_gen_one_shot`,
-   inlined rather than shared since mode 4 also owns the capture side of
-   the reset) -- not hardware-gapless like mode 1, so at high RPM the
-   report cadence can run slower than real time if a cycle's print takes
-   longer than the cycle period; each report is still correct for that
-   RPM's signal timing regardless. A non-blocking `getchar_timeout_us(0)`
-   poll each iteration lets Enter stop the loop without blocking capture.
+4. **Mode 4 — live capture.** Continuous and hardware-gapless, unlike
+   mode 3's one-shot: a constant-RPM sub-menu (1000/3000/5000/7000) picks
+   the simulated RPM, then crank/cam generation runs exactly like mode 1
+   (ping-pong, same rearm fix, same content in both slots since there's
+   no RPM ramp here) while a second ping-pong pair on `pio1` captures
+   continuously alongside it. Capture's own buffer length
+   (`live_want_samples`, `mode_live.c`) is the nearest-integer sample
+   count for one real 720° cycle at the chosen RPM -- no deliberate
+   margin, since capture free-runs continuously rather than being
+   re-armed each cycle by another channel's IRQ (unlike cam, capture's
+   buffer is always far bigger than the FIFO, so it doesn't have cam's
+   "completes instantly" problem and can safely self-chain with just the
+   same simple rearm). `dma_irq_handler` in `mode_live.c` handles two
+   independent completion events in one combined ISR: crank's (rearms
+   crank/cam, same as mode 1) and capture's (rearms that capture channel,
+   flags its just-filled buffer via `ready_slot`). The **main loop**, not
+   either ISR, does the actual analysis/printing (`compute_crank_reference`
+   + `report_pulse_angles`) picked up from `ready_slot` -- keeping
+   `printf` out of interrupt context, and meaning a slow print only skips
+   reporting a cycle (counted and printed as "N cycle(s) skipped"), it
+   never stalls generation or capture. A non-blocking
+   `getchar_timeout_us(0)` poll each loop iteration lets Enter stop the
+   loop.
+   Known limitation: capture's chain is independent of generation's, so
+   a cycle-to-cycle rounding remainder in `live_want_samples` can slowly
+   drift its buffer boundary out of phase with generation's real cycle
+   boundary. This occasionally (observed ~30% of cycles at 7000 RPM)
+   makes channel 0 (crank, the reference channel itself) land in the
+   wrong window and print a nonsense angle -- cosmetic only: every other
+   channel (cam, and any real ECU channel) is computed relative to
+   whichever window actually contains it and stays correct regardless,
+   confirmed on hardware across 175/175 cycles.
 
 Both generation and capture share one event-table convention: each event
 is 2 FIFO words (pin state, delay-in-cycles), consumed by the `event_gen`
@@ -136,11 +169,19 @@ generation and angle conversion:
   variably-modified file-scope array — undefined behavior, silent boot
   crash). `CAPTURE_SAMPLES` is also the hard cap on any single capture
   (mode 4 clamps its per-RPM sample count to it).
-- `capture_samples_used` (runtime) — how many of `capture_buf[]`'s entries
+- `capture_buf` (runtime, `uint32_t *`) — points at whichever physical
+  buffer holds the capture to analyze right now. Defaults to an internal
+  CAPTURE_SAMPLES-capacity buffer mode 3 uses as-is; mode 4 owns its own
+  two physical buffers (`live_capture_buf[]`, sized for continuous
+  ping-pong capture -- see mode 4 above) and repoints `capture_buf` at
+  whichever one just finished before calling any `capture_analysis.c`
+  function, no copy.
+- `capture_samples_used` (runtime) — how many of `capture_buf`'s entries
   the current capture actually holds; every edge-scanning function in
   `capture_analysis.c` loops over this, not `CAPTURE_SAMPLES`, so a call
-  site that DMAs fewer samples (mode 4) must set it before calling any of
-  them, or edge-finding will read a previous, longer capture's stale tail.
+  site that DMAs fewer samples (modes 3 and 4 both) must set it before
+  calling any of them, or edge-finding will read a previous, longer
+  capture's stale tail.
 
 Mode 3's default hardware setup is loopback: wire GPIO2→GPIO6 (crank) and
 GPIO3→GPIO7 (cam) so `evaluate_spec` has known-good data to check against.

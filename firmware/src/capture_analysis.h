@@ -20,7 +20,13 @@
 
 #define MAX_REFS 8
 
-extern uint32_t capture_buf[CAPTURE_SAMPLES];
+// Points at whichever physical buffer holds the capture to analyze right
+// now. Defaults to an internal CAPTURE_SAMPLES-capacity buffer that mode
+// 3 uses as-is; mode 4's continuous double-buffered capture instead owns
+// two of its own physical buffers and repoints capture_buf at whichever
+// one just finished before calling any function below (its DMA writes
+// directly into that physical buffer -- no copy).
+extern uint32_t *capture_buf;
 
 // Number of capture_buf[] entries actually holding this capture's samples
 // (<= CAPTURE_SAMPLES). Every DMA-into-capture_buf call site must set

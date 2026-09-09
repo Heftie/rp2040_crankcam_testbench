@@ -62,16 +62,26 @@ profile or mode; reset/replug to pick different ones):
    evaluates two example ECU-output specs (expected rise/fall angle,
    tolerance, expected 720° half) against the captured edges, printing
    PASS/FAIL per check.
-4. **Live capture** — like mode 3, but repeats automatically (no Enter per
-   shot; press Enter once to start, again to stop) and sizes the capture
-   window to one 720° cycle at a chosen constant RPM (1000/3000/5000/7000)
-   instead of a fixed 150 ms window. After every cycle, prints each of the
-   6 channels' rise/fall angle (or "not detected") — no pass/fail
-   tolerance, just what was captured. Each pass re-arms generation and
-   capture in software, so it isn't hardware-gapless like mode 1 — at
-   7000 RPM (17 ms/cycle) the report cadence may run slower than real
-   time if printing a cycle's report takes longer than the cycle itself,
-   but each report is still accurate for that RPM's signal timing.
+4. **Live capture** — continuous, hardware-gapless generation *and*
+   capture at a chosen constant RPM (1000/3000/5000/7000): crank/cam
+   ping-pong like mode 1, capture ping-pongs the same way alongside it, so
+   the simulated engine never pauses between cycles. After every
+   completed cycle, prints each of the 6 channels' rise/fall angle (or
+   "not detected") — no pass/fail tolerance, just what was captured.
+   Analysis/printing happens in the main loop, not the DMA IRQs, so a slow
+   print never stalls generation or capture — it just skips reporting that
+   cycle (reported as "N cycle(s) skipped"). Press Enter to start, Enter
+   again to stop.
+   Known cosmetic limitation: capture free-runs on its own DMA chain,
+   independent of generation's, so its buffer boundary isn't forced to
+   realign with generation's cycle boundary every cycle. Occasional
+   sub-sample phase drift between the two can make channel 0 (the crank
+   loopback channel itself) briefly land in the wrong reference window and
+   print a nonsense angle. This does not affect any other channel — cam
+   and any real ECU channel are computed relative to whichever window
+   actually contains them and stay correct regardless (verified on
+   hardware: cam held the correct ~120°/300° angle across 175/175 cycles
+   at 7000 RPM, including cycles where ch0 showed the artifact).
 
 ## Layout
 

@@ -2,7 +2,8 @@
 
 #include "capture_analysis.h"
 
-uint32_t capture_buf[CAPTURE_SAMPLES];
+static uint32_t default_capture_buf[CAPTURE_SAMPLES]; // mode 3's storage
+uint32_t *capture_buf = default_capture_buf;
 uint32_t capture_samples_used;
 
 // Collects up to max_out timestamps (ms) of edges on `ch` matching
