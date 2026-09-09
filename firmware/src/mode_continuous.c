@@ -41,6 +41,26 @@ static void configure_ping_pong_channel(PIO pio, uint sm, uint32_t *buf, uint32_
 // it will not be read again until the other buffer finishes its own turn,
 // a full 720deg cycle away, which is orders of magnitude longer than the
 // microseconds this refill takes.
+//
+// A finished channel's READ_ADDR/TRANS_COUNT sit at "end of buffer, 0
+// remaining" -- chain_to's hardware retrigger reuses a channel's
+// registers exactly as they stand, it does not restore them. Without
+// re-arming crank_chan[slot] here, the *next* time it's chain-triggered
+// (a full cycle later, by the other slot) it transfers zero words and
+// the pin freezes -- every buffer after the first pair silently no-ops.
+//
+// Cam is NOT re-armed the same way -- it isn't chained to itself at all
+// (see run_mode_continuous()). Cam's whole buffer (3 events, 6 words)
+// fits inside the SM's 8-word FIFO, so its own DMA "transfer complete"
+// fires almost instantly, long before the SM has actually played the
+// buffer out -- unlike crank, whose much bigger buffer is genuinely
+// FIFO-paced. Letting cam chain to itself made it retrigger far too
+// early and race this handler, corrupting playback unpredictably
+// (sporadic missing/misplaced cam pulses). Instead cam is driven
+// explicitly, once per cycle, right here: the OTHER slot's crank buffer
+// has just started playing (hardware already auto-chained it the instant
+// crank_chan[slot] completed), so start that same OTHER slot's cam
+// buffer now too, keeping them phase-locked to within IRQ latency.
 static void dma_irq_handler(void) {
     for (uint slot = 0; slot < NUM_BUFFERS; slot++) {
         uint chan = dma_crank_chan[slot];
@@ -49,6 +69,13 @@ static void dma_irq_handler(void) {
             cycles_completed++;
             double scale = cycle_rpm_scale[cycles_completed % 2];
             fill_buffer_slot(slot, scale);
+
+            dma_channel_set_read_addr(dma_crank_chan[slot], crank_events[slot], false);
+            dma_channel_set_trans_count(dma_crank_chan[slot], crank_words_total, false);
+
+            uint other = slot ^ 1; // NUM_BUFFERS == 2
+            dma_channel_set_read_addr(dma_cam_chan[other], cam_events[other], false);
+            dma_channel_set_trans_count(dma_cam_chan[other], CAM_WORDS_TOTAL, true);
         }
     }
 }
@@ -79,12 +106,15 @@ void run_mode_continuous(void) {
     configure_ping_pong_channel(pio, sm_crank, crank_events[1], crank_words_total,
                                  dma_crank_chan[1], dma_crank_chan[0]);
 
+    // Cam channels chain to themselves -- pico-sdk's documented way to
+    // disable hardware auto-chaining (see dma_irq_handler() above for
+    // why: cam is driven explicitly from the crank IRQ instead).
     dma_cam_chan[0] = dma_claim_unused_channel(true);
     dma_cam_chan[1] = dma_claim_unused_channel(true);
     configure_ping_pong_channel(pio, sm_cam, cam_events[0], CAM_WORDS_TOTAL,
-                                 dma_cam_chan[0], dma_cam_chan[1]);
+                                 dma_cam_chan[0], dma_cam_chan[0]);
     configure_ping_pong_channel(pio, sm_cam, cam_events[1], CAM_WORDS_TOTAL,
-                                 dma_cam_chan[1], dma_cam_chan[0]);
+                                 dma_cam_chan[1], dma_cam_chan[1]);
 
     irq_set_exclusive_handler(DMA_IRQ_0, dma_irq_handler);
     dma_channel_set_irq0_enabled(dma_crank_chan[0], true);
