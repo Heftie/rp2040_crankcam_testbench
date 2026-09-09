@@ -38,7 +38,6 @@ Typical usage::
 from __future__ import annotations
 
 import re
-import time
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
@@ -174,22 +173,13 @@ class CrankCamBoard:
 
     # -- connection --
 
-    def connect(self, overall_timeout: float = 5.0) -> Status:
-        """Reads board output until the boot-time status line appears.
-        The board is ready for commands as soon as it's plugged in --
-        there's no menu to drive -- so this just confirms it's alive and
-        returns its initial state."""
-        deadline = time.monotonic() + overall_timeout
-        while True:
-            if time.monotonic() > deadline:
-                raise ProtocolError("timed out waiting for the board's boot status line")
-            line = self._readline()
-            if line.startswith("cycle "):
-                self._cycle_queue.append(self._read_cycle_block(line))
-                continue
-            if line.startswith("STATUS"):
-                return _parse_status(line)
-            # boot greeting / anything else: ignore
+    def connect(self) -> Status:
+        """Queries status to confirm the board is alive and responding.
+        There's no menu or handshake to drive -- the board is ready for
+        commands as soon as it's plugged in, whether freshly reset or
+        already running -- so this is just status() under a more
+        discoverable name for "first call after opening the port"."""
+        return self.status()
 
     # -- commands --
 
