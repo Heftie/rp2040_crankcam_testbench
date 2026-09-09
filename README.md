@@ -80,11 +80,16 @@ its buffer boundary isn't forced to realign with generation's cycle
 boundary every cycle. Occasional sub-sample phase drift between the two
 can make channel 0 (the crank loopback channel itself) briefly land in
 the wrong reference window and print a nonsense angle. This does not
-affect any other channel — cam and any real ECU channel are computed
-relative to whichever window actually contains them and stay correct
-regardless (verified on hardware: cam held the correct ~120°/300° angle
-across 175/175 cycles at 7000 RPM, including cycles where ch0 showed the
-artifact).
+affect any other channel in most cases — cam and any real ECU channel are
+computed relative to whichever window actually contains them, and mostly
+stay correct regardless (verified on hardware: cam held the correct
+~120°/300° angle across 175/175 cycles at 7000 RPM, including cycles
+where ch0 showed the artifact). It's not airtight, though: also observed
+on hardware, cam itself occasionally reports an angle exactly 360° off
+(e.g. 480°/660° instead of ~120°/300°) at other RPM/timing combinations —
+same underlying window-matching issue, just not limited to ch0 in every
+case. A client consuming this stream should sanity-check reported angles
+rather than trust every cycle blindly.
 
 ## Python client
 
@@ -105,9 +110,18 @@ with CrankCamBoard("/dev/ttyACM0") as board:
     board.stop_gen()
 ```
 
-Not tested against real hardware (parsing verified against synthetic
-serial fixtures reproducing the firmware's exact output) — verify before
-relying on it in test automation.
+Verified against real hardware: connect, profile select, gen/capture
+start-stop, live RPM change, and error paths all confirmed working.
+
+### GUI
+
+`crankcam-gui` (installed by the `pip install -e python/` above) is a
+small Tk app: port/connect, profile/RPM/gen/capture controls, and a
+0-720° timeline canvas that redraws with each cycle's rise/fall angles.
+It runs one dedicated thread owning all serial I/O — the GUI thread only
+exchanges queued messages with it, since the board client isn't safe to
+call from two threads at once. Run with `crankcam-gui` or
+`python -m crankcam.gui`; verified against real hardware.
 
 ## Layout
 
@@ -125,7 +139,8 @@ firmware/
   pico_sdk_import.cmake
   env.sh                  sets PICO_SDK_PATH (edit for your checkout)
 python/
-  crankcam/               Python client for the command protocol
+  crankcam/board.py       Python client for the command protocol
+  crankcam/gui.py         Tk GUI (crankcam-gui)
 ```
 
 `src/crank_gen.pio` and `src/cam_gen.pio` are earlier/unused PIO programs,

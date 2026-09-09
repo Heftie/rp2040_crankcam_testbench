@@ -1,9 +1,12 @@
 [project]
 name = "crankcam"
 version = "0.1.0"
-description = "Python client for the RP2040 crank/cam trigger testbench USB-serial menu"
+description = "Python client for the RP2040 crank/cam trigger testbench USB-serial protocol"
 requires-python = ">=3.8"
 dependencies = ["pyserial>=3.5"]
+
+[project.scripts]
+crankcam-gui = "crankcam.gui:main"
 
 [build-system]
 requires = ["setuptools>=61.0"]
