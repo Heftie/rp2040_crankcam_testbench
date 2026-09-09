@@ -74,9 +74,9 @@ void run_mode_continuous(void) {
     // as its chain_to target, then configure both (armed, not started).
     dma_crank_chan[0] = dma_claim_unused_channel(true);
     dma_crank_chan[1] = dma_claim_unused_channel(true);
-    configure_ping_pong_channel(pio, sm_crank, crank_events[0], CRANK_WORDS_TOTAL,
+    configure_ping_pong_channel(pio, sm_crank, crank_events[0], crank_words_total,
                                  dma_crank_chan[0], dma_crank_chan[1]);
-    configure_ping_pong_channel(pio, sm_crank, crank_events[1], CRANK_WORDS_TOTAL,
+    configure_ping_pong_channel(pio, sm_crank, crank_events[1], crank_words_total,
                                  dma_crank_chan[1], dma_crank_chan[0]);
 
     dma_cam_chan[0] = dma_claim_unused_channel(true);

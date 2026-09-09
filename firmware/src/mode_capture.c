@@ -62,7 +62,7 @@ void run_mode_capture_test(void) {
         channel_config_set_write_increment(&cfg_crank, false);
         channel_config_set_dreq(&cfg_crank, pio_get_dreq(pio_gen, sm_crank, true));
         dma_channel_configure(dma_crank_chan, &cfg_crank, &pio_gen->txf[sm_crank],
-                               crank_events[0], CRANK_WORDS_TOTAL, false);
+                               crank_events[0], crank_words_total, false);
 
         dma_channel_config cfg_cam = dma_channel_get_default_config(dma_cam_chan);
         channel_config_set_transfer_data_size(&cfg_cam, DMA_SIZE_32);

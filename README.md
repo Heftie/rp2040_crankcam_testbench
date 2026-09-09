@@ -8,15 +8,36 @@ does angle conversion / pass-fail analysis. Design background:
 
 ## Signal model
 
-- Crank: 60-tooth wheel, 2 missing teeth (58 real teeth/rev), 2 revs per
-  720° four-stroke cycle.
-- Cam: one pulse per 720° cycle, rising at 120°, falling at 300°.
+- Crank: missing-tooth wheel, one selectable profile per run (see below).
+  2 revs per 720° four-stroke cycle.
+- Cam: one pulse per 720° cycle, rising at 120°, falling at 300° (same for
+  every profile).
 - Crank pin: GPIO2. Cam pin: GPIO3.
+
+## Trigger-wheel profiles
+
+Ardu-stim-style: a small table of named crank/cam wheel definitions
+(`firmware/src/profiles.c`), picked from the boot menu before the mode
+menu. Covers the common missing-tooth decoder family:
+
+| Profile | Teeth | Missing |
+|---|---:|---:|
+| 60-2 (default) | 60 | 2 |
+| 36-1 | 36 | 1 |
+| 24-1 | 24 | 1 |
+| 12-1 | 12 | 1 |
+| 60-0 (no missing tooth) | 60 | 0 |
+
+Add a profile by appending a `{name, teeth_per_rev, missing_teeth,
+cam_rise_deg, cam_fall_deg}` entry to `crankcam_profiles[]` in
+`firmware/src/profiles.c` — no other file needs to change. A wheel outside
+the missing-tooth family (e.g. Nissan 360, Subaru 7+1) would need a more
+general per-tooth-angle pattern description, not implemented here.
 
 ## Firmware modes
 
-One firmware image, one boot-time menu over USB serial (no reflash to
-switch mode; reset/replug to pick a different one):
+One firmware image, boot-time menu over USB serial (no reflash to switch
+profile or mode; reset/replug to pick different ones):
 
 1. **Continuous generation** — double-buffered crank/cam output following
    the 720° RPM profile from the concept doc (1000/1500/2500/3500/4000 RPM
@@ -35,7 +56,8 @@ switch mode; reset/replug to pick a different one):
 
 ```
 firmware/
-  src/main.c              boot menu only, dispatches to a mode
+  src/main.c              boot menu: profile select, then mode select
+  src/profiles.c/.h       selectable crank/cam trigger-wheel profiles
   src/event_table.c/.h    crank/cam geometry + event-table build (all modes)
   src/gen_fire.c/.h       one-shot generator fire (modes 2, 3)
   src/mode_continuous.c/.h  mode 1

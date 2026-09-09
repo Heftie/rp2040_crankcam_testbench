@@ -30,15 +30,20 @@ diagnostic modes (see below).
 
 ## Architecture
 
-`firmware/src/main.c` is only the boot menu: it reads one keypress over USB
-serial and dispatches into one of three mode modules. The chosen mode then
-runs forever (reset board to pick a different mode). Source layout:
+`firmware/src/main.c` is only the boot menu: it reads two keypresses over
+USB serial — first a crank/cam profile, then a mode — and dispatches into
+one of three mode modules. The chosen profile/mode then run forever (reset
+board to pick different ones). Source layout:
 
-- `event_table.c/.h` — crank/cam geometry macros, `crank_events[]`/
-  `cam_events[]`/`position_cycles[]` buffers, and event-table building
-  (`build_crank_events`, `build_cam_events`, `fill_buffer_slot`). Shared by
-  all three modes — this is where the RPM-profile-to-cycle-count math
-  lives.
+- `profiles.c/.h` — `crankcam_profiles[]`, the selectable trigger-wheel
+  table (ardu-stim-style: name + teeth/missing-teeth + cam angles). Adding
+  a wheel means adding one entry here, nothing else.
+- `event_table.c/.h` — event-table building against whichever profile
+  `select_profile()` last set (`build_crank_events`, `build_cam_events`,
+  `fill_buffer_slot`), plus `crank_events[]`/`cam_events[]`/
+  `position_cycles[]` buffers sized for the largest profile
+  (`MAX_TEETH_PER_REV`). Shared by all three modes — this is where the
+  RPM-profile-to-cycle-count math lives.
 - `gen_fire.c/.h` — `fire_gen_one_shot`, the reset-and-fire sequence for a
   single crank/cam burst. Shared by modes 2 and 3.
 - `mode_continuous.c/.h` — mode 1.
@@ -80,18 +85,31 @@ RPM) so crank and cam edges stay phase-locked by construction
 unused PIO programs — not wired into `CMakeLists.txt`. Only
 `event_gen.pio` and `capture.pio` are part of the build.
 
+Mode 3's two `EcuOutputSpec` demo checks (`mode_capture.c`) are hardcoded
+to the 120°/300° cam window, which every current profile shares — they do
+not vary per profile. A profile with different cam angles would need
+those checks parametrized too.
+
 ## Key constants (firmware/src/event_table.h, firmware/src/capture_analysis.h)
 
 Changing the trigger-wheel geometry, pin assignment, or capture parameters
 means updating these together — they're cross-referenced throughout event
 generation and angle conversion:
 
-- `CRANK_PIN` (2), `CAM_PIN` (3) — output pins.
-- `TEETH_PER_REV` (60), `MISSING_TEETH` (2), `REVS_PER_CYCLE` (2) — crank
-  wheel geometry; feeds `CRANK_EVENTS_TOTAL`/`CRANK_WORDS_TOTAL` sizing.
-- `CAM_RISE_POSITION`/`CAM_FALL_POSITION` — cam pulse angle, expressed as
-  crank tooth-position indices (not degrees) so it reuses the same
-  `position_cycles[]` timing as the crank.
+- `CRANK_PIN` (2), `CAM_PIN` (3) — output pins, fixed regardless of profile.
+- `REVS_PER_CYCLE` (2) — crank revs per 720° cycle, fixed regardless of
+  profile (cam disambiguates the two).
+- `MAX_TEETH_PER_REV` (60) — upper bound across all `profiles.c` entries;
+  sizes `crank_events[]`/`position_cycles[]`. `select_profile()` asserts
+  a profile's `teeth_per_rev` against it — raise it if you add a bigger
+  wheel.
+- `crank_words_total` (runtime, set by `build_crank_events`) — actual
+  per-buffer DMA word count for the selected profile; every DMA-configure
+  call site reads this instead of a compile-time size, since profiles have
+  different tooth/missing-teeth counts.
+- `CAM_RISE_POSITION`/`CAM_FALL_POSITION` no longer exist as macros — each
+  profile's `cam_rise_deg`/`cam_fall_deg` is converted to a tooth-position
+  index at `select_profile()` time.
 - `CAPTURE_BASE_PIN` (6), `CAPTURE_PIN_COUNT` (6), `CAPTURE_SAMPLE_HZ`,
   `CAPTURE_SAMPLES` — capture window; `CAPTURE_SAMPLES` is a plain integer
   literal kept in sync with `CAPTURE_SAMPLE_HZ * CAPTURE_DURATION_MS/1000`

@@ -26,7 +26,7 @@ void run_mode_singleshot(void) {
     uint dma_crank_chan = dma_claim_unused_channel(true);
     uint dma_cam_chan = dma_claim_unused_channel(true);
 
-    double total_ms = (double)position_cycles[0] * POSITIONS_TOTAL / f_pio_hz * 1000.0;
+    double total_ms = (double)position_cycles[0] * positions_total / f_pio_hz * 1000.0;
     printf("singleshot: crank pin=%d, cam pin=%d, const RPM=%.0f, "
            "cycle=%.2f ms (arm scope SINGLE, then press Enter to fire)\n",
            CRANK_PIN, CAM_PIN, CONSTANT_RPM, total_ms);

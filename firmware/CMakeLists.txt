@@ -14,6 +14,7 @@ pico_sdk_init()
 # between normal operation and the scope/capture diagnostic modes.
 add_executable(crankcam_testbench
     src/main.c
+    src/profiles.c
     src/event_table.c
     src/gen_fire.c
     src/mode_continuous.c

@@ -28,7 +28,7 @@ void fire_gen_one_shot(PIO pio, uint sm_crank, uint sm_cam, uint offset, float c
     channel_config_set_write_increment(&cfg_crank, false);
     channel_config_set_dreq(&cfg_crank, pio_get_dreq(pio, sm_crank, true));
     dma_channel_configure(dma_crank_chan, &cfg_crank, &pio->txf[sm_crank],
-                           crank_events[0], CRANK_WORDS_TOTAL, false);
+                           crank_events[0], crank_words_total, false);
 
     dma_channel_config cfg_cam = dma_channel_get_default_config(dma_cam_chan);
     channel_config_set_transfer_data_size(&cfg_cam, DMA_SIZE_32);

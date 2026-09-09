@@ -1,32 +1,32 @@
-// Shared crank/cam geometry, event-table encoding, and RPM-profile-to-
-// cycle-count conversion. Used by all three firmware modes.
+// Event-table encoding and RPM-profile-to-cycle-count conversion for the
+// currently selected crank/cam trigger-wheel profile (see profiles.h).
+// select_profile() must be called once, before build_position_cycles_*/
+// build_crank_events/build_cam_events are used. Used by all three modes.
 #ifndef EVENT_TABLE_H
 #define EVENT_TABLE_H
 
 #include <stdint.h>
 #include "pico/types.h"
-
-// ===================== Shared crank/cam config =====================
+#include "profiles.h"
 
 #define CRANK_PIN 2
 #define CAM_PIN 3
 
-#define TEETH_PER_REV 60
-#define MISSING_TEETH 2
-#define REAL_TEETH_PER_REV (TEETH_PER_REV - MISSING_TEETH) // 58
-#define REVS_PER_CYCLE 2
-#define POSITIONS_PER_REV TEETH_PER_REV                      // 60
-#define POSITIONS_TOTAL (POSITIONS_PER_REV * REVS_PER_CYCLE) // 120
-#define DEG_PER_POSITION (360.0 / POSITIONS_PER_REV)         // 6 deg
+// Largest teeth_per_rev any profiles.c entry may use -- sizes the static
+// event buffers below. select_profile() asserts against this.
+#define MAX_TEETH_PER_REV 60
+#define REVS_PER_CYCLE 2 // 720deg four-stroke cycle = 2 crank revs
 
-#define CRANK_EVENTS_PER_REV (REAL_TEETH_PER_REV * 2 + 1) // 116 edges + 1 gap = 117
-#define CRANK_EVENTS_TOTAL (CRANK_EVENTS_PER_REV * REVS_PER_CYCLE) // 234
-#define CRANK_WORDS_TOTAL (CRANK_EVENTS_TOTAL * 2) // 468
+// Worst case per profile: 0 missing teeth (every position is a tooth =
+// 2 edges) + 1 gap event/rev (unused but harmless when missing=0).
+#define MAX_CRANK_EVENTS_PER_REV (MAX_TEETH_PER_REV * 2 + 1)
+#define MAX_CRANK_EVENTS_TOTAL (MAX_CRANK_EVENTS_PER_REV * REVS_PER_CYCLE)
+#define MAX_CRANK_WORDS_TOTAL (MAX_CRANK_EVENTS_TOTAL * 2)
+#define MAX_POSITIONS_TOTAL (MAX_TEETH_PER_REV * REVS_PER_CYCLE)
 
-// Cam: one pulse per 720deg cycle, 120-300deg, aligned to positions 20/50
-// (120/6=20, 300/6=50) so it reuses crank's own per-position cycle counts.
-#define CAM_RISE_POSITION 20
-#define CAM_FALL_POSITION 50
+// Cam stays a single pulse (3 events: low, high, low) for every profile,
+// only its rise/fall position varies -- word count doesn't need to be
+// dynamic like the crank's.
 #define CAM_EVENTS_TOTAL 3
 #define CAM_WORDS_TOTAL (CAM_EVENTS_TOTAL * 2)
 
@@ -34,13 +34,23 @@
 #define NUM_BUFFERS 2
 #define CONSTANT_RPM 1000.0 // used by modes 2 and 3
 
-extern uint32_t crank_events[NUM_BUFFERS][CRANK_WORDS_TOTAL];
+extern uint32_t crank_events[NUM_BUFFERS][MAX_CRANK_WORDS_TOTAL];
 extern uint32_t cam_events[NUM_BUFFERS][CAM_WORDS_TOTAL];
-extern uint32_t position_cycles[POSITIONS_TOTAL];
+extern uint32_t position_cycles[MAX_POSITIONS_TOTAL];
 extern double f_pio_hz; // set by each mode from clock_get_hz(clk_sys)/clkdiv
 
+extern uint positions_total;    // current_profile.teeth_per_rev * REVS_PER_CYCLE
+extern uint32_t crank_words_total; // word count build_crank_events wrote last
+
+// Selects the active trigger-wheel profile: derives positions_total,
+// per-position degree pitch, and cam edge positions from it. Call once
+// at boot before any build_* function.
+void select_profile(const CrankCamProfile *profile);
+
 // Fills crank_events[buf]/cam_events[buf]-sized event tables from the
-// current position_cycles[] contents.
+// current position_cycles[] contents. build_crank_events also updates
+// crank_words_total to the number of words it wrote (varies with the
+// selected profile's teeth/missing-teeth count).
 void build_crank_events(uint32_t *buf);
 void build_cam_events(uint32_t *buf);
 
