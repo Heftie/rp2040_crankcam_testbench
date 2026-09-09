@@ -1,0 +1,67 @@
+;
+; Step 4: fixed cam output over one 720 deg (2 crank revolution) cycle.
+; One cam pulse per 720 deg cycle -- silent through the 2nd crank
+; revolution -- so the ECU can distinguish the two revolutions.
+;
+; Hand-timed to the exact 3850 cycles/720deg that crank_gen.pio produces
+; (1925 cycles/rev x 2), so starting both SMs on the same clock cycle
+; (pio_enable_sm_mask_in_sync in main.c) keeps them phase-locked.
+;
+; Segments (cycle offsets into the 3850-cycle/720deg period):
+;   0    .. 642  low   (0   .. 120 deg)
+;   642  .. 1604 high  (120 .. 300 deg)  <- matches concept doc section 9 example
+;   1604 .. 3850 low   (300 .. 720 deg)
+;
+; Every `set y,K-1` + `jmp y--,L [31]` block costs exactly 32*K+1 cycles.
+; Segment 3 needs 2246 cycles = 1 (set pins) + 5 blocks of K=14
+; (5*(32*14+1) = 2245), chosen so the block count solves
+; 32*sum(K)+blocks = 2245 exactly -- see concept doc section 5/6 for why
+; this hand-tuning goes away once DMA event tables drive both signals.
+;
+
+.program cam_gen
+
+.wrap_target
+    set pins, 0
+    set y, 19
+lowA:
+    jmp y--, lowA [31]      ; segment 1: 20*32 = 640 (+2 setup) = 642 cycles
+
+    set pins, 1
+    set y, 29
+highB:
+    jmp y--, highB [31]     ; segment 2: 30*32 = 960 (+2 setup) = 962 cycles
+
+    set pins, 0
+    set y, 13
+lowC1:
+    jmp y--, lowC1 [31]
+    set y, 13
+lowC2:
+    jmp y--, lowC2 [31]
+    set y, 13
+lowC3:
+    jmp y--, lowC3 [31]
+    set y, 13
+lowC4:
+    jmp y--, lowC4 [31]
+    set y, 13
+lowC5:
+    jmp y--, lowC5 [31]     ; segment 3: 1 + 5*(32*14+1) = 2246 cycles
+.wrap
+
+% c-sdk {
+// Configures the SM but does not enable it -- enable together with the
+// crank SM via pio_enable_sm_mask_in_sync() so both start phase-locked.
+static inline void cam_gen_program_init(PIO pio, uint sm, uint offset, uint pin, float clkdiv) {
+    pio_sm_config c = cam_gen_program_get_default_config(offset);
+
+    sm_config_set_set_pins(&c, pin, 1);
+    pio_gpio_init(pio, pin);
+    pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, true);
+
+    sm_config_set_clkdiv(&c, clkdiv);
+
+    pio_sm_init(pio, sm, offset, &c);
+}
+%}

@@ -1,0 +1,51 @@
+;
+; Step 2: fixed 60-2 crank trigger wheel on one GPIO.
+; 58 regular teeth per revolution, then one long gap equal to 2 missing
+; tooth widths, repeating. Still fixed-frequency (no FIFO/DMA yet) --
+; the tooth period is fixed by clkdiv + delay values. Later steps replace
+; the fixed delay with values pulled from the TX FIFO (fed by DMA) so
+; tooth period can vary with a commanded RPM profile.
+;
+; N = 60 nominal tooth positions/rev, 2 missing -> 58 real teeth.
+; Split as outer(2) x inner(29) = 58 to fit 5-bit `set` immediates.
+;
+; Tooth = 32 cycles exactly (16 high + 16 low), where the low phase is
+; split 15+1 because the `jmp x--` loop instruction itself costs 1 cycle
+; and holds the pin low while it runs. This exact 32-cycle/tooth budget
+; is required so the crank revolution has a known, exact cycle count --
+; cam_gen.pio is hand-timed against that same count to stay phase-locked
+; when both PIO SMs are started on the same clock cycle (see main.c).
+; Revolution total: 1(set y) + 2*(1 set x + 29*32 teeth + 1 jmp y) + 64 gap
+;                  = 1925 cycles/rev, 3850 cycles/720 deg (2 revs).
+;
+
+.program crank_gen
+
+.wrap_target
+    set y, 1            ; outer loop: 2 passes
+outer:
+    set x, 28            ; inner loop: 29 teeth/pass -> 2*29 = 58 teeth/rev
+tooth:
+    set pins, 1 [15]
+    set pins, 0 [14]
+    jmp x--, tooth
+    jmp y--, outer
+    set pins, 0 [31]    ; gap: 2 missing-tooth widths, no edge
+    set pins, 0 [31]
+.wrap
+
+% c-sdk {
+// Configures the SM but does not enable it -- enable together with the
+// cam SM via pio_enable_sm_mask_in_sync() so both start phase-locked.
+static inline void crank_gen_program_init(PIO pio, uint sm, uint offset, uint pin, float clkdiv) {
+    pio_sm_config c = crank_gen_program_get_default_config(offset);
+
+    sm_config_set_set_pins(&c, pin, 1);
+    pio_gpio_init(pio, pin);
+    pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, true);
+
+    sm_config_set_clkdiv(&c, clkdiv);
+
+    pio_sm_init(pio, sm, offset, &c);
+}
+%}

@@ -1,0 +1,42 @@
+;
+; Step 5: generic event-driven output.
+; Same program is used for crank, cam (and later tertiary) SMs -- each
+; instance is configured with its own output pin and fed by its own
+; DMA channel from its own RAM event buffer, so the CPU derives every
+; signal's exact cycle counts from one shared angle/RPM time base. No
+; PIO-side hand-tuned cycle matching (unlike the step-4 fixed loops).
+;
+; Each event = 2 FIFO words:
+;   word 0: pin state to set (0 or 1, mapped to the configured out pin)
+;   word 1: delay value D -- hold for D+3 cycles (2 `out` + (D+1) loop
+;           iterations of `jmp x--`). CPU must subtract 3 when building
+;           the table: D = desired_cycles - 3 (desired_cycles >= 3).
+;
+
+.program event_gen
+
+.wrap_target
+    out pins, 32
+    out x, 32
+delay_loop:
+    jmp x--, delay_loop
+.wrap
+
+% c-sdk {
+// Configures the SM but does not enable it -- enable crank+cam together
+// via pio_enable_sm_mask_in_sync() so they start phase-locked.
+static inline void event_gen_program_init(PIO pio, uint sm, uint offset, uint pin, float clkdiv) {
+    pio_sm_config c = event_gen_program_get_default_config(offset);
+
+    sm_config_set_out_pins(&c, pin, 1);
+    pio_gpio_init(pio, pin);
+    pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, true);
+
+    sm_config_set_out_shift(&c, false, true, 32); // shift left, autopull, 32-bit
+    sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_TX);
+
+    sm_config_set_clkdiv(&c, clkdiv);
+
+    pio_sm_init(pio, sm, offset, &c);
+}
+%}

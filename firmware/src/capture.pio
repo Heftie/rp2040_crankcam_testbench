@@ -1,0 +1,41 @@
+;
+; Step 8: fixed-rate 6-channel input capture.
+;
+; RP2040 PIO SMs have only 2 general registers (X, Y), and the hardware
+; register-compare branch (`jmp x!=y`) is hard-wired to X vs Y. Doing
+; true edge-triggered capture on one SM needs 3 things live at once
+; (current sample, previous sample, running timestamp counter) -- doesn't
+; fit. Chosen fix: sample all 6 pins at a fixed, known rate and let the
+; CPU find edges afterward (timestamp = sample index * fixed period).
+; Same approach as the official pico-examples PIO logic analyser.
+;
+; 2 instructions/sample (in + push), so sample period = 2 * clkdiv sysclk
+; cycles. C-sdk init below picks clkdiv for a caller-specified rate.
+;
+
+.program capture
+
+.wrap_target
+    in pins, 6
+    push
+.wrap
+
+% c-sdk {
+static inline void capture_program_init(PIO pio, uint sm, uint offset, uint base_pin,
+                                         uint pin_count, float clkdiv) {
+    pio_sm_config c = capture_program_get_default_config(offset);
+
+    sm_config_set_in_pins(&c, base_pin);
+    for (uint i = 0; i < pin_count; i++) {
+        pio_gpio_init(pio, base_pin + i);
+    }
+    pio_sm_set_consecutive_pindirs(pio, sm, base_pin, pin_count, false); // inputs
+
+    sm_config_set_in_shift(&c, false, false, 32); // shift left, no autopush
+    sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_RX);
+
+    sm_config_set_clkdiv(&c, clkdiv);
+
+    pio_sm_init(pio, sm, offset, &c);
+}
+%}
