@@ -1,29 +1,17 @@
 from .board import (
     CAPTURE_PIN_COUNT,
-    CaptureResult,
-    CaptureTestMode,
-    ChannelEdges,
-    ContinuousMode,
     CrankCamBoard,
     CycleReport,
-    LiveMode,
     Profile,
     ProtocolError,
-    SingleshotMode,
-    SpecCheck,
+    Status,
 )
 
 __all__ = [
     "CAPTURE_PIN_COUNT",
-    "CaptureResult",
-    "CaptureTestMode",
-    "ChannelEdges",
-    "ContinuousMode",
     "CrankCamBoard",
     "CycleReport",
-    "LiveMode",
     "Profile",
     "ProtocolError",
-    "SingleshotMode",
-    "SpecCheck",
+    "Status",
 ]

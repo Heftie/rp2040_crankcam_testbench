@@ -81,55 +81,8 @@ void build_position_cycles_constant(double rpm) {
     }
 }
 
-// =============== RPM-profile-to-cycle-count conversion (mode 1) ===============
-
-// Section 3 profile: desired RPM at 0/180/360/540/720 deg crank angle.
-typedef struct {
-    double angle_deg;
-    double rpm;
-} RpmPoint;
-
-static const RpmPoint base_rpm_profile[] = {
-    {0.0, 1000.0},
-    {180.0, 1500.0},
-    {360.0, 2500.0},
-    {540.0, 3500.0},
-    {720.0, 4000.0},
-};
-#define RPM_PROFILE_POINTS (sizeof(base_rpm_profile) / sizeof(base_rpm_profile[0]))
-
-static double interpolate_rpm(double angle_deg, double scale) {
-    if (angle_deg <= base_rpm_profile[0].angle_deg) {
-        return base_rpm_profile[0].rpm * scale;
-    }
-    for (uint i = 0; i + 1 < RPM_PROFILE_POINTS; i++) {
-        const RpmPoint *a = &base_rpm_profile[i];
-        const RpmPoint *b = &base_rpm_profile[i + 1];
-        if (angle_deg <= b->angle_deg) {
-            double frac = (angle_deg - a->angle_deg) / (b->angle_deg - a->angle_deg);
-            return (a->rpm + frac * (b->rpm - a->rpm)) * scale;
-        }
-    }
-    return base_rpm_profile[RPM_PROFILE_POINTS - 1].rpm * scale;
-}
-
-// Delta t_i = 60 / (RPM_i * N); C_i = Delta t_i * f_PIO (doc section 3).
-static uint32_t cycles_for_position(double angle_deg, double scale) {
-    double rpm = interpolate_rpm(angle_deg, scale);
-    double dt = 60.0 / (rpm * positions_per_rev);
-    double cycles = dt * f_pio_hz;
-    return (uint32_t)(cycles + 0.5);
-}
-
-static void build_position_cycles_profile(double scale) {
-    for (uint pos = 0; pos < positions_total; pos++) {
-        double angle = pos * deg_per_position;
-        position_cycles[pos] = cycles_for_position(angle, scale);
-    }
-}
-
-void fill_buffer_slot(uint slot, double scale) {
-    build_position_cycles_profile(scale);
+void fill_buffer_slot_constant(uint slot, double rpm) {
+    build_position_cycles_constant(rpm);
     build_crank_events(crank_events[slot]);
     build_cam_events(cam_events[slot]);
 }

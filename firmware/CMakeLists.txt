@@ -9,19 +9,16 @@ set(CMAKE_CXX_STANDARD 17)
 
 pico_sdk_init()
 
-# Single firmware image, three modes selected from a boot-time menu over
-# USB serial (see src/main.c) -- no separate reflash needed to switch
-# between normal operation and the scope/capture diagnostic modes.
+# Single firmware image, command-driven over USB serial (see src/main.c)
+# -- generation and capture are entered/left and RPM changed live, no
+# reset or reflash needed to change anything.
 add_executable(crankcam_testbench
     src/main.c
     src/profiles.c
     src/event_table.c
     src/gen_fire.c
-    src/mode_continuous.c
-    src/mode_singleshot.c
     src/capture_analysis.c
-    src/mode_capture.c
-    src/mode_live.c
+    src/engine.c
 )
 
 pico_generate_pio_header(crankcam_testbench

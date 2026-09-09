@@ -1,9 +1,9 @@
 # RP2040 Crank/Cam Testbench
 
-RP2040 firmware that generates crank/cam trigger signals and checks ECU
-outputs against expected crank-angle windows. PIO + DMA do the
-timing-critical generation and capture; the CPU builds event tables and
-does angle conversion / pass-fail analysis. Design background:
+RP2040 firmware that generates crank/cam trigger signals and reports
+ECU-output edges as crank angle, command-driven over USB serial. PIO + DMA
+do the timing-critical generation and capture; the CPU builds event
+tables and does angle conversion. Design background:
 [`rp2040_pio_dma_crank_cam_concept.md`](rp2040_pio_dma_crank_cam_concept.md).
 
 ## Signal model
@@ -17,8 +17,8 @@ does angle conversion / pass-fail analysis. Design background:
 ## Trigger-wheel profiles
 
 Ardu-stim-style: a small table of named crank/cam wheel definitions
-(`firmware/src/profiles.c`), picked from the boot menu before the mode
-menu. Teeth/missing-tooth counts are copied from real decoder patterns in
+(`firmware/src/profiles.c`), selected at runtime with the `p<n>` command
+(see below). Teeth/missing-tooth counts are copied from real decoder patterns in
 [ardu-stim's `wheel_defs.h`](https://github.com/speeduino/Ardu-Stim/blob/master/ardustim/ardustim/wheel_defs.h)
 (GPLv3) — only the entries that fit this tool's model (one crank wheel
 with a trailing missing-tooth gap, plus one cam sync pulse):
@@ -45,62 +45,87 @@ the missing-tooth family (e.g. Nissan 360, Subaru 7+1, Miata 99-05's
 uneven-width teeth) would need a more general per-tooth-angle pattern
 description, not implemented here.
 
-## Firmware modes
+## Firmware command protocol
 
-One firmware image, boot-time menu over USB serial (no reflash to switch
-profile or mode; reset/replug to pick different ones):
+One firmware image, always ready — no boot menu, no reset needed to
+change anything. It's a one-line-command protocol over USB serial: a
+letter plus an optional argument, no separator (e.g. `r3000`). Every
+command gets exactly one `OK ...`/`ERR ...` response line.
 
-1. **Continuous generation** — double-buffered crank/cam output following
-   the 720° RPM profile from the concept doc (1000/1500/2500/3500/4000 RPM
-   at 0/180/360/540/720°). Alternates a 1.0x/1.15x RPM scale each cycle to
-   exercise the double-buffer refill path. Runs forever.
-2. **Single-shot diagnostic** — one fixed-RPM (1000) 2-rev crank/cam burst
-   per Enter keypress, for scope bring-up.
-3. **Capture test** — fires one single-shot burst, captures 6 input
-   channels (GPIO6–11, wire GPIO2→6 and GPIO3→7 for loopback) at 100 kHz
-   for 150 ms, derives crank angle from measured tooth timing, and
-   evaluates two example ECU-output specs (expected rise/fall angle,
-   tolerance, expected 720° half) against the captured edges, printing
-   PASS/FAIL per check.
-4. **Live capture** — continuous, hardware-gapless generation *and*
-   capture at a chosen constant RPM (1000/3000/5000/7000): crank/cam
-   ping-pong like mode 1, capture ping-pongs the same way alongside it, so
-   the simulated engine never pauses between cycles. After every
-   completed cycle, prints each of the 6 channels' rise/fall angle (or
-   "not detected") — no pass/fail tolerance, just what was captured.
-   Analysis/printing happens in the main loop, not the DMA IRQs, so a slow
-   print never stalls generation or capture — it just skips reporting that
-   cycle (reported as "N cycle(s) skipped"). Press Enter to start, Enter
-   again to stop.
-   Known cosmetic limitation: capture free-runs on its own DMA chain,
-   independent of generation's, so its buffer boundary isn't forced to
-   realign with generation's cycle boundary every cycle. Occasional
-   sub-sample phase drift between the two can make channel 0 (the crank
-   loopback channel itself) briefly land in the wrong reference window and
-   print a nonsense angle. This does not affect any other channel — cam
-   and any real ECU channel are computed relative to whichever window
-   actually contains them and stay correct regardless (verified on
-   hardware: cam held the correct ~120°/300° angle across 175/175 cycles
-   at 7000 RPM, including cycles where ch0 showed the artifact).
+| Command | Effect |
+|---|---|
+| `p<n>` | Select trigger-wheel profile `n` (1-based, see `l`). Requires generation stopped. |
+| `r<n>` | Set RPM to `n`. Live if generation is running — takes effect at the next 720° cycle boundary. |
+| `g1` / `g0` | Start/stop crank+cam generation. Stopping generation also stops capture. |
+| `c1` / `c0` | Start/stop capture + live per-cycle angle report. Requires generation running. |
+| `l` | List trigger-wheel profiles. |
+| `?` | Print status (`STATUS profile=... rpm=... gen=0/1 capture=0/1`). |
+| `h` | Print command help. |
+
+Generation is continuous double-buffered crank/cam output at a constant,
+live-adjustable RPM (two real PIO/DMA hardware bugs around this refill
+path are documented in `CLAUDE.md`). Capture is continuous and
+hardware-gapless: a second PIO program samples 6 input channels
+(GPIO6–11, wire GPIO2→6 and GPIO3→7 for loopback) alongside generation,
+and after every completed 720° cycle prints each channel's rise/fall
+angle (or "not detected") — no pass/fail tolerance in firmware; that's
+left to a client watching the stream (see the Python client below).
+Printing happens in the main loop, not the DMA IRQs, so a slow print
+never stalls generation or capture — it just skips reporting that cycle
+("N cycle(s) skipped").
+
+Known cosmetic limitation, unchanged from the design this replaced:
+capture free-runs on its own DMA chain, independent of generation's, so
+its buffer boundary isn't forced to realign with generation's cycle
+boundary every cycle. Occasional sub-sample phase drift between the two
+can make channel 0 (the crank loopback channel itself) briefly land in
+the wrong reference window and print a nonsense angle. This does not
+affect any other channel — cam and any real ECU channel are computed
+relative to whichever window actually contains them and stay correct
+regardless (verified on hardware: cam held the correct ~120°/300° angle
+across 175/175 cycles at 7000 RPM, including cycles where ch0 showed the
+artifact).
+
+## Python client
+
+`python/crankcam/` is a thin client for the protocol above (`pip install
+-e python/`, needs `pyserial`):
+
+```python
+from crankcam import CrankCamBoard
+
+with CrankCamBoard("/dev/ttyACM0") as board:
+    board.select_profile(1)
+    board.set_rpm(3000)
+    board.start_gen()
+    board.start_capture()
+    for _ in range(10):
+        print(board.read_cycle())
+    board.stop_capture()
+    board.stop_gen()
+```
+
+Not tested against real hardware (parsing verified against synthetic
+serial fixtures reproducing the firmware's exact output) — verify before
+relying on it in test automation.
 
 ## Layout
 
 ```
 firmware/
-  src/main.c              boot menu: profile select, then mode select
+  src/main.c              command loop over USB serial (see protocol table above)
   src/profiles.c/.h       selectable crank/cam trigger-wheel profiles
-  src/event_table.c/.h    crank/cam geometry + event-table build (all modes)
-  src/gen_fire.c/.h       one-shot generator fire (modes 2, 3)
-  src/mode_continuous.c/.h  mode 1
-  src/mode_singleshot.c/.h  mode 2
-  src/capture_analysis.c/.h edge/angle/pass-fail/live-report logic (modes 3, 4)
-  src/mode_capture.c/.h   mode 3 driver
-  src/mode_live.c/.h      mode 4 driver
-  src/event_gen.pio       crank/cam waveform generator (PIO), used by all modes
-  src/capture.pio         6-channel edge capture (PIO), used by mode 3
+  src/event_table.c/.h    crank/cam geometry + event-table build
+  src/gen_fire.c/.h       ping-pong DMA config for continuous generation
+  src/capture_analysis.c/.h  edge/angle/live-report logic
+  src/engine.c/.h         generation+capture state machine, DMA IRQ handler
+  src/event_gen.pio       crank/cam waveform generator (PIO)
+  src/capture.pio         6-channel edge capture (PIO)
   CMakeLists.txt
   pico_sdk_import.cmake
   env.sh                  sets PICO_SDK_PATH (edit for your checkout)
+python/
+  crankcam/               Python client for the command protocol
 ```
 
 `src/crank_gen.pio` and `src/cam_gen.pio` are earlier/unused PIO programs,

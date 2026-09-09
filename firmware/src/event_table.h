@@ -1,7 +1,7 @@
-// Event-table encoding and RPM-profile-to-cycle-count conversion for the
+// Event-table encoding and RPM-to-cycle-count conversion for the
 // currently selected crank/cam trigger-wheel profile (see profiles.h).
 // select_profile() must be called once, before build_position_cycles_*/
-// build_crank_events/build_cam_events are used. Used by all three modes.
+// build_crank_events/build_cam_events are used. Used by engine.c.
 #ifndef EVENT_TABLE_H
 #define EVENT_TABLE_H
 
@@ -32,7 +32,6 @@
 
 #define EVENT_MIN_CYCLES 3 // 2 `out` + at least 1 delay_loop iteration
 #define NUM_BUFFERS 2
-#define CONSTANT_RPM 1000.0 // used by modes 2 and 3
 
 extern uint32_t crank_events[NUM_BUFFERS][MAX_CRANK_WORDS_TOTAL];
 extern uint32_t cam_events[NUM_BUFFERS][CAM_WORDS_TOTAL];
@@ -54,13 +53,15 @@ void select_profile(const CrankCamProfile *profile);
 void build_crank_events(uint32_t *buf);
 void build_cam_events(uint32_t *buf);
 
-// Fills position_cycles[] with a single constant value (modes 2 and 3:
-// no RPM ramp, simplest possible signal for scope/capture validation).
+// Fills position_cycles[] with a single constant value -- every position
+// takes the same time, i.e. steady-state RPM with no ramp.
 void build_position_cycles_constant(double rpm);
 
 // Recomputes both crank_events[slot] and cam_events[slot] from one shared
-// position_cycles[] pass (built from the section-3 RPM profile, scaled by
-// `scale`), keeping crank/cam phase-locked by construction.
-void fill_buffer_slot(uint slot, double scale);
+// constant-RPM position_cycles[] pass, keeping crank/cam phase-locked by
+// construction. Called once per 720deg cycle boundary by engine.c's DMA
+// IRQ handler, using whatever RPM is current at that moment -- this is
+// what makes engine_set_rpm() take effect live.
+void fill_buffer_slot_constant(uint slot, double rpm);
 
 #endif
