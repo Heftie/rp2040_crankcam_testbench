@@ -130,19 +130,31 @@ Still-open issue, NOT fixed: a fresh `g1` immediately followed by `c1`
 (no other capture session in between) finds no valid crank reference for
 the rest of that session roughly half the time -- deterministic per
 session (clean alternation across repeated trials, not random flicker),
-and never self-corrects. Root-caused down to hardware level: GPIO2
-(crank output), polled directly with `gpio_get()`, always toggles
-correctly; capture's DMA channel always arms and progresses normally
-(transfer count decrementing right after arm); but GPIO6 (capture's own
-input pin for channel 0), also polled directly with `gpio_get()` --
-bypassing PIO and DMA entirely -- reads a constant stuck level for the
-whole session when it fails. That's a real voltage, not a software
-bookkeeping artifact, and `capture_program_init()` (the only code that
-configures GPIO6 at all) runs exactly once at boot, never again per
-session -- nothing in the firmware touches GPIO6 after that. Needs a
-scope/logic analyzer on the GPIO2-GPIO6 loopback wire during a failing
-session, or swapping in a different physical jumper/pin pair to see
-whether the fault follows the wire or the pin, to make further progress.
+and never self-corrects. Root-caused down to hardware level and isolated
+to the crank signal specifically, not any particular pin: GPIO2 (crank
+output), polled directly with `gpio_get()` right at the source pad,
+always toggles correctly; capture's DMA channel always arms and
+progresses normally (transfer count decrementing right after arm); but
+the loopback-wired crank *input* pin, polled directly with `gpio_get()`
+-- bypassing PIO and DMA entirely -- reads a constant stuck level for
+the whole session on the failing half of runs. Swapping the loopback
+wiring (crank moved from its default GPIO2->GPIO6 to GPIO2->GPIO7, cam
+from GPIO3->GPIO7 to GPIO3->GPIO6) moved the same ~50%-of-sessions stuck
+symptom onto GPIO7 with crank, while cam stayed rock solid (2 clean
+transitions every single trial) on GPIO6 -- ruling out a GPIO6-specific
+pad/pull/wire fault and pointing at something in crank's own generation
+path (`engine_start_gen`'s crank SM setup, or `event_gen.pio`'s output
+config) that occasionally leaves the driven signal unable to properly
+reach a downstream receiver, despite reading correctly at its own source
+pad. Needs a scope on the crank output pin itself (not just a same-chip
+`gpio_get()`) during a failing session to see what's actually different
+about the drive in the bad case, or a closer read of `event_gen.pio`'s
+C-SDK init (`pio_gpio_init`/`pio_sm_set_consecutive_pindirs` ordering
+vs. `pio_sm_init`/`pio_enable_sm_mask_in_sync`) for a race that leaves
+output-enable or drive strength in an inconsistent state on some starts.
+Default wiring (GPIO2->GPIO6, GPIO3->GPIO7) should be restored before
+relying on this board for anything other than continuing this
+investigation.
 
 Known limitation, carried over unchanged from the design this replaced:
 capture's chain is independent of generation's, so a cycle-to-cycle
