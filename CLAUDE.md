@@ -24,10 +24,16 @@ make -j
 ```
 
 Output is `crankcam_testbench.uf2`; flash by holding BOOTSEL and copying it
-to the RP2040's mass-storage drive. There is no test suite — validation is
-against real hardware (scope/logic analyzer) via the firmware's own live
-capture/report output (see below). A Python client (`python/crankcam/`)
-drives the same command protocol; see its module docstring.
+to the RP2040's mass-storage drive. There is no firmware test suite —
+validation is against real hardware (scope/logic analyzer) via the
+firmware's own live capture/report output (see below), plus
+`python/crankcam/step_test.py` (an RPM-step testbench driven over the
+live serial protocol; see its module docstring) for repeatable hardware
+runs. A Python client (`python/crankcam/`) drives the same command
+protocol; see its module docstring. That client's own protocol-parsing
+logic (not the firmware) has an offline, hardware-free unittest suite at
+`python/tests/` — run with `cd python && python -m unittest discover -s
+tests`.
 
 ## Architecture
 
