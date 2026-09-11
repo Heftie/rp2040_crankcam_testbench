@@ -43,13 +43,22 @@ class Worker(threading.Thread):
 
     def run(self):
         while not self._stop.is_set():
+            capturing = self.board is not None and self._capturing
             try:
-                name, args = self.cmd_q.get(timeout=0.05)
+                # While capturing, don't block waiting for a command --
+                # a cycle report can already be sitting in the serial
+                # buffer, and waiting here even a few ms caps how fast
+                # we can drain it. At >~2400 RPM cycles arrive faster
+                # than a 0.05s poll can keep up, backlog builds up on
+                # the wire, and a read eventually lands mid-line and
+                # corrupts the parse. Idle (not capturing), keep the
+                # poll delay so this thread doesn't spin doing nothing.
+                name, args = self.cmd_q.get(timeout=0 if capturing else 0.05)
                 self._handle(name, args)
             except queue.Empty:
                 pass
 
-            if self.board is not None and self._capturing:
+            if capturing:
                 try:
                     report = self.board.read_cycle()
                     self.event_q.put(("cycle", report))
