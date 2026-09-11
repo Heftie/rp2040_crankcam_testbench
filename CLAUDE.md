@@ -32,8 +32,15 @@ live serial protocol; see its module docstring) for repeatable hardware
 runs. A Python client (`python/crankcam/`) drives the same command
 protocol; see its module docstring. That client's own protocol-parsing
 logic (not the firmware) has an offline, hardware-free unittest suite at
-`python/tests/` — run with `cd python && python -m unittest discover -s
-tests`.
+`python/tests/test_board.py` — run with `cd python && python -m
+unittest discover -s tests`. That same `python/tests/` directory also
+has `test_hardware.py`, a unittest suite that drives a REAL board over
+this same API to check protocol-level behavior (profile/RPM bounds,
+gen/capture lifecycle rules, cycle-report structure) -- it auto-skips
+cleanly if no board answers on `CRANKCAM_PORT` (default
+`/dev/ttyACM0`), so `python -m unittest discover -s tests` is always
+safe to run with or without hardware attached; see its module docstring
+for why it deliberately doesn't assert on the two known-open bugs below.
 
 ## Architecture
 
