@@ -1,5 +1,6 @@
 from .board import (
     CAPTURE_PIN_COUNT,
+    ChannelReport,
     CrankCamBoard,
     CycleReport,
     Profile,
@@ -9,6 +10,7 @@ from .board import (
 
 __all__ = [
     "CAPTURE_PIN_COUNT",
+    "ChannelReport",
     "CrankCamBoard",
     "CycleReport",
     "Profile",

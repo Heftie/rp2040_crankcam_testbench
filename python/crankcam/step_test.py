@@ -11,17 +11,26 @@ Per step, holds RPM for --duration seconds and counts:
     beyond the reported skip count (protocol desync)
   - parse errors (ProtocolError from read_cycle -- corrupted/misaligned
     line, the failure mode the GUI bug produced)
-  - cycles with no valid reference, and per-channel "not detected" counts
+  - cycles with no valid reference
+  - per channel: genuine "not detected" (no rise/fall edge found at all
+    -- e.g. an unwired pin) counted separately from "no window" (an edge
+    *was* found but its timestamp didn't fall inside any known crank-
+    reference window, printed as "rise=-- fall=--" on the wire) -- these
+    look identical if conflated (both parse to no angle), but only the
+    former means "nothing there". The latter is ch0's documented,
+    accepted window-drift cosmetic issue (see CLAUDE.md) and is reported
+    but never gates pass/fail.
 
 Pass/fail only checks ch0/ch1 (crank/cam, the two channels the default
-loopback wiring drives -- GPIO2->6, GPIO3->7, per CLAUDE.md). ch2-5 are
-unwired by default and always read "not detected", so they're reported
-but never gate pass/fail; pass --channels to change which ones do.
+loopback wiring drives -- GPIO2->6, GPIO3->7, per CLAUDE.md) for genuine
+not-detected. ch2-5 are unwired by default and always read "not
+detected", so they're reported but never gate pass/fail; pass --channels
+to change which ones do.
 
-Default RPM range stops at 7000 -- above that ch0 (crank, the reference
-channel) is known-cosmetic-flaky (window-matching drift, see CLAUDE.md)
-and would fail here even though cam/ECU channels stay correct. Raise
---stop deliberately if you want to characterize that, not by default.
+Default RPM range stops at 7000: ch0's window-drift rate is highly
+session-dependent (observed anywhere from 0% to ~99%, not reliably tied
+to RPM), so raising --stop doesn't buy a cleaner test -- 7000 just keeps
+runs a reasonable length.
 
 Run with: python -m crankcam.step_test [--port /dev/ttyACM0] [--profile 1]
           [--start 1000] [--stop 7000] [--step 1000] [--duration 3]
@@ -51,6 +60,7 @@ class StepResult:
     parse_errors: int = 0
     no_ref: int = 0
     channel_missing: List[int] = field(default_factory=lambda: [0] * CAPTURE_PIN_COUNT)
+    channel_no_window: List[int] = field(default_factory=lambda: [0] * CAPTURE_PIN_COUNT)
 
     @property
     def ok(self) -> bool:
@@ -79,20 +89,28 @@ def run_step(board: CrankCamBoard, rpm: int, duration_s: float, channels: List[i
             result.no_ref += 1
             continue
         for ch in range(CAPTURE_PIN_COUNT):
-            rise, fall = report.channels.get(ch, (None, None))
-            if rise is None and fall is None:
+            cr = report.channels.get(ch)
+            if cr is None or not cr.detected:
                 result.channel_missing[ch] += 1
+            elif cr.rise_deg is None and cr.fall_deg is None:
+                result.channel_no_window[ch] += 1
     return result
 
 
 def _print_step(r: StepResult) -> None:
-    ch_str = " ".join(f"ch{c}={r.channel_missing[c]}" for c in r.channels)
+    miss_str = " ".join(f"ch{c}={r.channel_missing[c]}" for c in r.channels)
+    window_str = " ".join(
+        f"ch{c}={r.channel_no_window[c]}" for c in range(CAPTURE_PIN_COUNT) if r.channel_no_window[c]
+    )
     status = "OK" if r.ok else "FAIL"
-    print(
+    line = (
         f"[{status}] rpm={r.rpm:6d}  cycles={r.cycles:4d}  skipped={r.skipped:4d}  "
         f"gaps={r.cycle_gaps}  parse_err={r.parse_errors}  no_ref={r.no_ref}  "
-        f"not_detected: {ch_str}"
+        f"not_detected: {miss_str}"
     )
+    if window_str:
+        line += f"  no_window(cosmetic): {window_str}"
+    print(line)
 
 
 def main(argv=None) -> int:

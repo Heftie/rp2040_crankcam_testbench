@@ -160,12 +160,23 @@ Known limitation, carried over unchanged from the design this replaced:
 capture's chain is independent of generation's, so a cycle-to-cycle
 rounding remainder in the sample count can slowly drift its buffer
 boundary out of phase with generation's real cycle boundary. This
-occasionally (observed ~30% of cycles at 7000 RPM) makes channel 0
-(crank, the reference channel itself) land in the wrong window and print
-a nonsense angle -- cosmetic only: every other channel (cam, and any real
-ECU channel) is computed relative to whichever window actually contains
-it and stays correct regardless, confirmed on hardware across 175/175
-cycles.
+occasionally makes channel 0 (crank, the reference channel itself) land
+in the wrong window and print `rise=-- fall=--` instead of an angle --
+cosmetic only: every other channel (cam, and any real ECU channel) is
+computed relative to whichever window actually contains it and stays
+correct regardless, confirmed on hardware across 175/175 cycles.
+Frequency is highly session-dependent and not reliably tied to RPM --
+observed anywhere from 0% to ~99% of cycles within a session, including
+at RPMs well below the ~30%-at-7000-RPM figure this was first
+characterized with, so don't read a specific number here as a bound.
+`python/crankcam/board.py`'s `ChannelReport.detected` distinguishes this
+("detected" true, both `*_deg` fields None) from a channel with no edge
+at all ("detected" false) -- the client used to conflate these into one
+`(None, None)`, which briefly looked like a second, unrelated bug during
+investigation (a printf-vs-DMA-wrap race was suspected and partially
+implemented in engine.c/capture_analysis.c, then reverted once raw-wire
+tracing showed the counts were this same window-drift issue all along;
+not worth re-attempting without new evidence).
 
 Both generation and capture share one event-table convention: each event
 is 2 FIFO words (pin state, delay-in-cycles), consumed by the `event_gen`

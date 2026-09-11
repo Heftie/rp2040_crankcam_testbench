@@ -320,9 +320,16 @@ class CrankCamGui:
 
         for ch in range(CAPTURE_PIN_COUNT):
             y = top + ch * row_h + row_h // 2
-            rise, fall = report.channels.get(ch, (None, None)) if report.have_refs else (None, None)
-            if rise is None and fall is None:
+            cr = report.channels.get(ch) if report.have_refs else None
+            if cr is None or not cr.detected:
                 self.canvas.create_text((x0 + x1) / 2, y, text="not detected", fill="#aaa",
+                                         font=("TkDefaultFont", 8), tags="data")
+                continue
+            rise, fall = cr.rise_deg, cr.fall_deg
+            if rise is None and fall is None:
+                # Edge(s) found but outside any known crank-reference
+                # window -- a real signal, not an absent one.
+                self.canvas.create_text((x0 + x1) / 2, y, text="no window", fill="#aaa",
                                          font=("TkDefaultFont", 8), tags="data")
                 continue
             if rise is not None:

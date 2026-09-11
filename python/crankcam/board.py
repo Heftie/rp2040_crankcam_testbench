@@ -71,13 +71,26 @@ class Status:
 
 
 @dataclass
+class ChannelReport:
+    # False means the firmware found no rise or fall edge at all on this
+    # channel this cycle ("not detected": e.g. an unwired pin). True
+    # means at least one edge was found, but rise_deg/fall_deg can still
+    # individually be None if that particular edge's timestamp didn't
+    # fall inside any known crank-reference window ("--" on the wire) --
+    # a different condition (see CLAUDE.md's ch0 window-drift note),
+    # not "no signal".
+    detected: bool
+    rise_deg: Optional[float]
+    fall_deg: Optional[float]
+
+
+@dataclass
 class CycleReport:
     cycle: int
     skipped: int
     have_refs: bool
-    # channel -> (rise_deg, fall_deg); either half is None if that edge
-    # wasn't found, and the dict is empty when have_refs is False.
-    channels: Dict[int, Tuple[Optional[float], Optional[float]]] = field(default_factory=dict)
+    # channel -> ChannelReport; empty when have_refs is False.
+    channels: Dict[int, ChannelReport] = field(default_factory=dict)
 
 
 _STATUS_RE = re.compile(r"STATUS profile=(.+) rpm=(\d+) gen=([01]) capture=([01])")
@@ -133,20 +146,20 @@ class CrankCamBoard:
         if line.strip() == "no valid cycle reference this pass":
             return CycleReport(cycle, skipped, have_refs=False)
 
-        channels: Dict[int, Tuple[Optional[float], Optional[float]]] = {}
+        channels: Dict[int, ChannelReport] = {}
         for i in range(CAPTURE_PIN_COUNT):
             cm = _CHANNEL_RE.match(line)
             if cm:
                 ch = int(cm.group(1))
                 rise = None if cm.group(2) == "--" else float(cm.group(2)[:-3])
                 fall = None if cm.group(3) == "--" else float(cm.group(3)[:-3])
+                channels[ch] = ChannelReport(detected=True, rise_deg=rise, fall_deg=fall)
             else:
                 nm = _CHANNEL_NOT_DETECTED_RE.match(line)
                 if not nm:
                     raise ProtocolError(f"expected channel line, got: {line!r}")
                 ch = int(nm.group(1))
-                rise = fall = None
-            channels[ch] = (rise, fall)
+                channels[ch] = ChannelReport(detected=False, rise_deg=None, fall_deg=None)
             if i < CAPTURE_PIN_COUNT - 1:
                 line = self._readline()
         return CycleReport(cycle, skipped, have_refs=True, channels=channels)
