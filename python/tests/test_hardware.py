@@ -246,5 +246,42 @@ class CycleReportTests(HardwareTestCase):
         self.assertTrue(found, "ch1 (cam) never detected across cycles with have_refs=True")
 
 
+class RpmSweepTests(HardwareTestCase):
+    """Live-RPM acquisition across a range of steps, one continuous
+    capture session throughout (start_capture() once, set_rpm() live
+    between steps) -- the way the GUI and a real test bench actually
+    drive it. This is the regression check for the GUI Worker throttling
+    bug (see git history): a client draining too slowly let cycle
+    reports back up and a read land mid-line, corrupting the parse.
+    Checks protocol integrity only -- parseable lines, no cycle-number
+    gaps -- not have_refs/window-match content, which are the two
+    separate known-open hardware bugs covered (and exempted) elsewhere
+    in this file."""
+
+    RPM_STEPS = (1000, 2000, 3000, 4000, 5000, 6000, 7000)
+    CYCLES_PER_STEP = 5
+
+    def test_acquisition_stays_desync_free_across_rpm_steps(self):
+        self.board.start_gen()
+        self.board.set_rpm(self.RPM_STEPS[0])
+        self.board.start_capture()
+        for rpm in self.RPM_STEPS:
+            with self.subTest(rpm=rpm):
+                self.board.set_rpm(rpm)
+                last_cycle = None
+                for _ in range(self.CYCLES_PER_STEP):
+                    try:
+                        report = self.board.read_cycle()
+                    except ProtocolError as e:
+                        self.fail(f"parse error at {rpm} RPM: {e}")
+                    if last_cycle is not None:
+                        self.assertEqual(
+                            report.cycle,
+                            last_cycle + 1 + report.skipped,
+                            f"cycle-number gap at {rpm} RPM (protocol desync)",
+                        )
+                    last_cycle = report.cycle
+
+
 if __name__ == "__main__":
     unittest.main()
