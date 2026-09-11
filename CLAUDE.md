@@ -103,6 +103,47 @@ out of interrupt context, so a slow print only skips reporting a cycle
 (counted and printed as "N cycle(s) skipped"), never stalls generation or
 capture.
 
+Two more real hardware bugs, both in `engine_start_capture`/
+`engine_start_gen`, fixed and scope-verified (see git history): (a) the
+RP2040's per-channel `dma_hw->ints0` completion flag is sticky --
+`dma_channel_set_irq0_enabled()` only gates whether that channel's
+completion *interrupts* the CPU, it does not clear the flag itself.
+Every capture session's channels complete (ping-ponging) many times
+before being stopped, so the flag is essentially always left set; without
+clearing it, the very next crank-triggered `dma_irq_handler()` call after
+a restart -- often before the channel had even started for real that
+session -- misread it as a genuine completion, corrupting
+`ready_slot`/`produced_cycles` and the DMA's own live write address right
+as the session began. Reproduced on hardware: repeated `c1`/`c0` restarts
+within one still-running `g1` session failed to find a valid crank
+reference almost every time; fixed by explicitly clearing both capture
+channels' `ints0` bits before re-enabling their IRQs. (b)
+`dma_irq_handler`'s capture branch is unconditional (doesn't check
+`capture_running`), so it runs on every crank-completion IRQ regardless
+-- a routine, unrelated IRQ landing mid-setup could read/rearm a capture
+channel's registers concurrently with `configure_capture_ping_pong()`, a
+genuine foreground/ISR register race. Fixed by masking `DMA_IRQ_0` for
+the duration of `engine_start_capture`'s (and, defensively,
+`engine_start_gen`'s) setup.
+
+Still-open issue, NOT fixed: a fresh `g1` immediately followed by `c1`
+(no other capture session in between) finds no valid crank reference for
+the rest of that session roughly half the time -- deterministic per
+session (clean alternation across repeated trials, not random flicker),
+and never self-corrects. Root-caused down to hardware level: GPIO2
+(crank output), polled directly with `gpio_get()`, always toggles
+correctly; capture's DMA channel always arms and progresses normally
+(transfer count decrementing right after arm); but GPIO6 (capture's own
+input pin for channel 0), also polled directly with `gpio_get()` --
+bypassing PIO and DMA entirely -- reads a constant stuck level for the
+whole session when it fails. That's a real voltage, not a software
+bookkeeping artifact, and `capture_program_init()` (the only code that
+configures GPIO6 at all) runs exactly once at boot, never again per
+session -- nothing in the firmware touches GPIO6 after that. Needs a
+scope/logic analyzer on the GPIO2-GPIO6 loopback wire during a failing
+session, or swapping in a different physical jumper/pin pair to see
+whether the fault follows the wire or the pin, to make further progress.
+
 Known limitation, carried over unchanged from the design this replaced:
 capture's chain is independent of generation's, so a cycle-to-cycle
 rounding remainder in the sample count can slowly drift its buffer

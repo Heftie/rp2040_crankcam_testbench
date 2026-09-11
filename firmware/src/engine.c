@@ -150,6 +150,13 @@ bool engine_set_rpm(uint32_t rpm) {
 void engine_start_gen(void) {
     if (gen_running) return;
 
+    // See the same-purpose mask in engine_start_capture() -- not observed
+    // to bite here (crank/cam start from a fully-stopped state, so there's
+    // no routine unrelated IRQ that could land mid-setup the way capture's
+    // always-running-crank-IRQ can), but it's the identical hazard class
+    // and equally cheap to close off.
+    irq_set_enabled(DMA_IRQ_0, false);
+
     fill_buffer_slot_constant(0, (double)target_rpm);
     fill_buffer_slot_constant(1, (double)target_rpm);
 
@@ -168,6 +175,12 @@ void engine_start_gen(void) {
     configure_ping_pong_channel(pio_gen, sm_cam, cam_events[1], CAM_WORDS_TOTAL,
                                  dma_cam_chan[1], dma_cam_chan[1]);
 
+    // Clear any completion flag left sticky from a previous gen session --
+    // dma_channel_set_irq0_enabled() only gates whether this channel's
+    // completion *interrupts* the CPU, it does not clear the sticky
+    // ints0 status bit itself (same latent issue fixed for capture below;
+    // not observed to bite here, but it's the identical hazard).
+    dma_hw->ints0 = (1u << dma_crank_chan[0]) | (1u << dma_crank_chan[1]);
     dma_channel_set_irq0_enabled(dma_crank_chan[0], true);
     dma_channel_set_irq0_enabled(dma_crank_chan[1], true);
 
@@ -176,6 +189,7 @@ void engine_start_gen(void) {
     pio_enable_sm_mask_in_sync(pio_gen, (1u << sm_crank) | (1u << sm_cam));
 
     gen_running = true;
+    irq_set_enabled(DMA_IRQ_0, true);
 }
 
 void engine_stop_gen(void) {
@@ -202,12 +216,39 @@ bool engine_start_capture(void) {
     if (target_rpm < CAPTURE_MIN_RPM) return false;
     if (capture_running) return true;
 
+    // Mask DMA_IRQ_0 for this whole setup. dma_irq_handler()'s capture
+    // branch is unconditional -- it doesn't check capture_running -- so
+    // it runs on every crank-completion IRQ regardless (crank completes
+    // once per revolution, forever, while gen is running). Without
+    // masking, one of those routine, unrelated IRQs landing mid-setup
+    // here can read/rearm a capture channel's registers concurrently
+    // with configure_capture_ping_pong() below -- a genuine foreground/
+    // ISR race on the same registers. Reproduced on hardware: a fresh
+    // start_gen()+start_capture() sequence, with no delay between them
+    // (so an unrelated crank IRQ was very likely to land mid-setup),
+    // ended up with a capture buffer that was never actually written by
+    // DMA at all (read back as all-zero for its full length) roughly
+    // half the time, and it never recovered until capture was restarted.
+    // A short mask here (microseconds; nowhere near a revolution period)
+    // removes the race outright instead of trying to sequence around it.
+    irq_set_enabled(DMA_IRQ_0, false);
+
     uint32_t samples = samples_for_rpm(target_rpm);
     configure_capture_ping_pong(live_capture_buf[0], samples,
                                  dma_capture_chan[0], dma_capture_chan[1]);
     configure_capture_ping_pong(live_capture_buf[1], samples,
                                  dma_capture_chan[1], dma_capture_chan[0]);
 
+    // Also clear any stale completion flag left set from a previous
+    // capture session -- dma_channel_set_irq0_enabled() only gates
+    // whether this channel's completion *interrupts* the CPU, it does
+    // not clear the sticky ints0 status bit itself. Every session's
+    // capture channels complete (ping-ponging) many times before being
+    // stopped, so this bit is essentially always left set; without
+    // clearing it, the handler would misread it as a genuine completion
+    // the instant IRQs are re-enabled below, before this channel has
+    // even started for real this session.
+    dma_hw->ints0 = (1u << dma_capture_chan[0]) | (1u << dma_capture_chan[1]);
     dma_channel_set_irq0_enabled(dma_capture_chan[0], true);
     dma_channel_set_irq0_enabled(dma_capture_chan[1], true);
 
@@ -224,6 +265,7 @@ bool engine_start_capture(void) {
     busy_wait_us(100);
 
     capture_running = true;
+    irq_set_enabled(DMA_IRQ_0, true);
     return true;
 }
 
