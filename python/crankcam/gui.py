@@ -22,8 +22,6 @@ import serial
 
 from .board import CAPTURE_PIN_COUNT, CrankCamBoard, CycleReport, Profile, ProtocolError, Status
 
-CHANNEL_LABELS = ["ch0 (crank)", "ch1 (cam)", "ch2", "ch3", "ch4", "ch5"]
-
 
 class Worker(threading.Thread):
     """Owns the CrankCamBoard and all serial I/O. Commands come in via
@@ -295,7 +293,7 @@ class CrankCamGui:
         for ch in range(CAPTURE_PIN_COUNT):
             y = top + ch * row_h + row_h // 2
             self.canvas.create_line(60, y, self.canvas_w - 10, y, fill="#ccc", tags="axis")
-            self.canvas.create_text(6, y, text=CHANNEL_LABELS[ch], anchor="w", font=("TkDefaultFont", 8),
+            self.canvas.create_text(6, y, text=f"ch{ch}", anchor="w", font=("TkDefaultFont", 8),
                                      tags="axis")
         base_y = top + CAPTURE_PIN_COUNT * row_h + 12
         for deg in (0, 180, 360, 540, 720):
