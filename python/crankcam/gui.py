@@ -19,8 +19,15 @@ from tkinter import ttk
 from typing import Optional
 
 import serial
+from serial.tools import list_ports
 
 from .board import CAPTURE_PIN_COUNT, CrankCamBoard, CycleReport, Profile, ProtocolError, Status
+
+# Raspberry Pi's USB VID, and the PID pico-sdk's stock stdio_usb/TinyUSB CDC
+# stack enumerates as (not the RP2 Boot mass-storage PID 0x0003 seen only in
+# BOOTSEL mode) -- used to pick the Pico out of a port scan automatically.
+PICO_VID = 0x2E8A
+PICO_PID = 0x000A
 
 
 class Worker(threading.Thread):
@@ -129,6 +136,7 @@ class CrankCamGui:
         self.connected = False
 
         self._build_widgets()
+        self._on_scan_click()
         self.root.after(50, self._poll_events)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -139,7 +147,9 @@ class CrankCamGui:
         conn.pack(fill="x")
         ttk.Label(conn, text="Port:").pack(side="left")
         self.port_var = tk.StringVar(value="/dev/ttyACM0")
-        ttk.Entry(conn, textvariable=self.port_var, width=16).pack(side="left", padx=4)
+        self.port_combo = ttk.Combobox(conn, textvariable=self.port_var, width=16)
+        self.port_combo.pack(side="left", padx=4)
+        ttk.Button(conn, text="Scan", command=self._on_scan_click).pack(side="left", padx=4)
         self.connect_btn = ttk.Button(conn, text="Connect", command=self._on_connect_click)
         self.connect_btn.pack(side="left", padx=4)
         self.status_var = tk.StringVar(value="not connected")
@@ -206,6 +216,24 @@ class CrankCamGui:
             self.connect_btn.configure(text="Connect")
         else:
             self.cmd_q.put(("connect", (self.port_var.get(),)))
+
+    def _on_scan_click(self):
+        found = list_ports.comports()
+        pico_ports = [p.device for p in found if p.vid == PICO_VID and p.pid == PICO_PID]
+        other_ports = [p.device for p in found if p.device not in pico_ports]
+        self.port_combo.configure(values=pico_ports + other_ports)
+
+        if pico_ports and self.port_var.get() not in pico_ports:
+            self.port_var.set(pico_ports[0])
+        elif not pico_ports and other_ports and self.port_var.get() not in other_ports:
+            self.port_var.set(other_ports[0])
+
+        if pico_ports:
+            self._log(f"scan: found Pico at {', '.join(pico_ports)}")
+        elif found:
+            self._log(f"scan: no Pico found ({len(found)} other port(s))")
+        else:
+            self._log("scan: no ports found")
 
     def _on_select_profile(self):
         idx = self.profile_box.current()
