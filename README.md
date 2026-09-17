@@ -150,3 +150,35 @@ make -j
 
 Produces `crankcam_testbench.uf2` — flash by holding BOOTSEL and copying
 it to the RP2040's mass-storage drive.
+
+### Flashing without the BOOTSEL button
+
+A `picotool` built with USB (libusb) support can reboot an already-running
+board into BOOTSEL itself, over USB, using the reset-via-vendor-interface
+feature `pico_stdio_usb` enables by default -- no button needed, even for
+a live reflash:
+
+```sh
+picotool load -f -x firmware/build/crankcam_testbench.uf2
+```
+
+The SDK's own auto-fetched `picotool` (under `firmware/build/_deps/`) is
+deliberately built *without* USB support (`PICOTOOL_NO_LIBUSB=1`) -- it's
+only used for build-time UF2/ELF postprocessing. For a USB-capable one,
+build picotool separately against the same fetched source:
+
+```sh
+cmake -S firmware/build/_deps/picotool-src -B /tmp/picotool-build \
+      -DPICO_SDK_PATH="$PICO_SDK_PATH"
+cmake --build /tmp/picotool-build -j
+cp /tmp/picotool-build/picotool ~/.local/bin/   # or anywhere on PATH
+```
+
+Needs `libusb-1.0-0-dev` installed, and (once) picotool's udev rules for
+BOOTSEL-mode USB access without root:
+
+```sh
+sudo cp firmware/build/_deps/picotool-src/udev/60-picotool.rules /etc/udev/rules.d/
+sudo udevadm control --reload
+sudo udevadm trigger --action=add --subsystem-match=usb   # applies it to an already-plugged-in board
+```
