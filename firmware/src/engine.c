@@ -159,7 +159,7 @@ static void dma_irq_handler(void) {
             dma_channel_set_trans_count(dma_crank_chan[slot], crank_words_total, false);
 
             dma_channel_set_read_addr(dma_cam_chan[other], cam_events[other], false);
-            dma_channel_set_trans_count(dma_cam_chan[other], CAM_WORDS_TOTAL, true);
+            dma_channel_set_trans_count(dma_cam_chan[other], cam_words_total, true);
         }
 
         uint cap_chan = dma_capture_chan[slot];
@@ -246,9 +246,9 @@ void engine_start_gen(void) {
 
     // Cam channels chain to themselves (disabled) -- driven explicitly
     // from the crank completion IRQ instead. See dma_irq_handler().
-    configure_ping_pong_channel(pio_gen, sm_cam, cam_events[0], CAM_WORDS_TOTAL,
+    configure_ping_pong_channel(pio_gen, sm_cam, cam_events[0], cam_words_total,
                                  dma_cam_chan[0], dma_cam_chan[0]);
-    configure_ping_pong_channel(pio_gen, sm_cam, cam_events[1], CAM_WORDS_TOTAL,
+    configure_ping_pong_channel(pio_gen, sm_cam, cam_events[1], cam_words_total,
                                  dma_cam_chan[1], dma_cam_chan[1]);
 
     // Clear any completion flag left sticky from a previous gen session --

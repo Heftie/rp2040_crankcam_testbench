@@ -3,33 +3,45 @@
 #include "event_table.h"
 
 uint32_t crank_events[NUM_BUFFERS][MAX_CRANK_WORDS_TOTAL];
-uint32_t cam_events[NUM_BUFFERS][CAM_WORDS_TOTAL];
+uint32_t cam_events[NUM_BUFFERS][MAX_CAM_WORDS_TOTAL];
 uint32_t position_cycles[MAX_POSITIONS_TOTAL];
 double f_pio_hz;
 
 uint positions_total;
 uint32_t crank_words_total;
+uint32_t cam_words_total;
 
 static CrankCamProfile current_profile;
 static uint positions_per_rev;
 static double deg_per_position;
-static uint cam_rise_position;
-static uint cam_fall_position;
+static uint cam_rise_position[MAX_CAM_PULSES];
+static uint cam_fall_position[MAX_CAM_PULSES];
+static uint cam_pulse_count;
 
 void select_profile(const CrankCamProfile *profile) {
     assert(profile->teeth_per_rev <= MAX_TEETH_PER_REV);
     assert(profile->missing_teeth < profile->teeth_per_rev);
+    assert(profile->cam_pulse_count >= 1 && profile->cam_pulse_count <= MAX_CAM_PULSES);
 
     current_profile = *profile;
     positions_per_rev = profile->teeth_per_rev;
     positions_total = positions_per_rev * REVS_PER_CYCLE;
     deg_per_position = 360.0 / positions_per_rev;
+    cam_pulse_count = profile->cam_pulse_count;
 
     // Cam edge angles must land on a tooth-position boundary (see
     // profiles.h) -- round rather than assert so a near-miss profile
     // still runs, just with the cam edge nudged to the nearest position.
-    cam_rise_position = (uint)(profile->cam_rise_deg / deg_per_position + 0.5);
-    cam_fall_position = (uint)(profile->cam_fall_deg / deg_per_position + 0.5);
+    // Pulses must stay in ascending, non-overlapping order after
+    // rounding -- true of every profiles.c entry, asserted here since
+    // build_cam_events below relies on it.
+    for (uint i = 0; i < cam_pulse_count; i++) {
+        cam_rise_position[i] = (uint)(profile->cam_pulses[i].rise_deg / deg_per_position + 0.5);
+        cam_fall_position[i] = (uint)(profile->cam_pulses[i].fall_deg / deg_per_position + 0.5);
+        assert(cam_rise_position[i] < cam_fall_position[i]);
+        assert(i == 0 || cam_rise_position[i] >= cam_fall_position[i - 1]);
+    }
+    assert(cam_fall_position[cam_pulse_count - 1] <= positions_total);
 }
 
 static void push_event(uint32_t *buf, uint *idx, uint32_t state, uint32_t desired_cycles) {
@@ -37,6 +49,15 @@ static void push_event(uint32_t *buf, uint *idx, uint32_t state, uint32_t desire
     assert(desired_cycles >= EVENT_MIN_CYCLES);
     buf[(*idx)++] = state;
     buf[(*idx)++] = desired_cycles - EVENT_MIN_CYCLES;
+}
+
+// Skips emitting a zero-length segment instead of pushing a 0-cycle event
+// (push_event's EVENT_MIN_CYCLES floor would fail on one) -- needed now
+// that a cam pulse's rise can land exactly on position 0 or butt up
+// against the previous pulse's fall with no gap (see the multi-pulse
+// iFlexAir profiles in profiles.c).
+static void push_event_if_nonempty(uint32_t *buf, uint *idx, uint32_t state, uint32_t desired_cycles) {
+    if (desired_cycles > 0) push_event(buf, idx, state, desired_cycles);
 }
 
 void build_crank_events(uint32_t *buf) {
@@ -69,9 +90,14 @@ static uint32_t sum_position_cycles(uint from, uint to_exclusive) {
 
 void build_cam_events(uint32_t *buf) {
     uint idx = 0;
-    push_event(buf, &idx, 0, sum_position_cycles(0, cam_rise_position));
-    push_event(buf, &idx, 1, sum_position_cycles(cam_rise_position, cam_fall_position));
-    push_event(buf, &idx, 0, sum_position_cycles(cam_fall_position, positions_total));
+    uint pos = 0;
+    for (uint i = 0; i < cam_pulse_count; i++) {
+        push_event_if_nonempty(buf, &idx, 0, sum_position_cycles(pos, cam_rise_position[i]));
+        push_event(buf, &idx, 1, sum_position_cycles(cam_rise_position[i], cam_fall_position[i]));
+        pos = cam_fall_position[i];
+    }
+    push_event_if_nonempty(buf, &idx, 0, sum_position_cycles(pos, positions_total));
+    cam_words_total = idx;
 }
 
 void build_position_cycles_constant(double rpm) {

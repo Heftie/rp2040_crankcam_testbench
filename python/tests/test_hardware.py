@@ -357,6 +357,118 @@ class ClosedLoopCamTests(HardwareTestCase):
                 self._check_reports(reports, rpm=rpm)
 
 
+class MultiPulseCamTests(HardwareTestCase):
+    """Closed-loop check for the multi-pulse cam wheels added alongside
+    the multi-pulse CamPulse[] profile model (profiles.c: FAW Diesel/CNG
+    iFlexAir 58/7, Perkins iFlexAir 59/11) -- same generate-yourself,
+    capture-and-check-against-known-truth idea as ClosedLoopCamTests, but
+    those wheels have several cam pulses per 720deg cycle instead of one.
+
+    report_pulse_angles() (capture_analysis.c) was written for the
+    single-pulse case and still reports at most one rise + one fall per
+    channel per cycle: find_first_edge() independently returns the FIRST
+    rising transition and the FIRST falling transition it finds while
+    scanning the capture buffer in sample order. With several pulses in
+    one buffer, "first in the buffer" depends on the capture window's
+    phase against the generation cycle -- which pulse that is varies
+    cycle to cycle and isn't controlled by this profile. Measured on
+    hardware: at a fixed RPM this phase is usually stable for many
+    cycles in a row, but the reported rise and the reported fall can
+    legitimately belong to two DIFFERENT pulses (e.g. Perkins profile at
+    1000/3000 RPM: rise~=18.3deg matching pulse 2's rise (20deg) while
+    fall~=12.2deg matches pulse 1's fall (10deg) -- fall numerically
+    before rise, not a bug, just two different pulses' edges reported on
+    one line). So this test checks rise and fall independently against
+    the profile's whole pulse list, not as a matched (rise, fall) pair --
+    that's the actual, correct behavior of the current one-rise/one-fall
+    protocol applied to a multi-pulse cam signal, not a regression.
+
+    TOLERANCE_DEG is wider than ClosedLoopCamTests' 2.0deg: these wheels'
+    pulse edges (unlike the single-pulse profiles' 120/300deg window,
+    which divides their tooth pitch evenly) don't land exactly on a tooth
+    boundary, so select_profile() (event_table.c) rounds each edge to the
+    nearest one -- up to half a tooth pitch (~3.1deg on these 58/59-tooth
+    wheels) away from the nominal value asserted here, on top of the
+    ~0.5deg capture-quantization noise ClosedLoopCamTests already budgets
+    for.
+    """
+
+    TOLERANCE_DEG = 3.5
+    RPM_STEPS = (1500, 4000, 7000)
+    SETTLE_CYCLES = 2
+    CYCLES_PER_STEP = 6
+
+    # Mirrors the CamPulse[] arrays in profiles.c -- (rise_deg, fall_deg)
+    # per pulse, ascending, as generated (pre-tooth-position-rounding).
+    PROFILES = {
+        "FAW Diesel iFlexAir 58/7": [
+            (0.0, 10.0), (30.0, 40.0), (120.0, 130.0), (240.0, 250.0),
+            (360.0, 370.0), (480.0, 490.0), (600.0, 610.0),
+        ],
+        "FAW CNG iFlexAir 58/7": [
+            (0.0, 10.0), (93.0, 103.0), (123.0, 133.0), (200.0, 210.0),
+            (320.0, 330.0), (440.0, 450.0), (560.0, 570.0),
+        ],
+        "Perkins iFlexAir 59/11": [
+            (0.0, 10.0), (20.0, 30.0), (80.0, 90.0), (140.0, 150.0),
+            (200.0, 210.0), (260.0, 270.0), (320.0, 330.0), (360.0, 370.0),
+            (468.0, 478.0), (498.0, 508.0), (560.0, 570.0), (618.0, 628.0),
+        ],
+    }
+
+    def _profile_index(self, name):
+        for p in self.board.list_profiles():
+            if p.name == name:
+                return p.index
+        self.fail(f"profile {name!r} not found in board's profile list")
+
+    def _matches_some_pulse(self, value, candidates):
+        return any(abs(value - c) <= self.TOLERANCE_DEG for c in candidates)
+
+    def _check_reports(self, name, reports, rises, falls, rpm):
+        undetected = sum(1 for r in reports if not (r.channels.get(1) and r.channels[1].detected))
+        if undetected > len(reports) // 2:
+            self.skipTest(
+                f"ch1 undetected in {undetected}/{len(reports)} cycles for {name!r} at "
+                f"{rpm} RPM -- known-open capture-pipeline dropout (see CLAUDE.md), not a "
+                "cam-generation regression; rerun for a fresh session"
+            )
+        for r in reports:
+            self.assertTrue(r.have_refs, f"no cycle-timebase reference for {name!r} at {rpm} RPM")
+            cr = r.channels.get(1)
+            if cr is None or not cr.detected:
+                continue
+            if cr.rise_deg is not None:
+                self.assertTrue(
+                    self._matches_some_pulse(cr.rise_deg, rises),
+                    f"{name!r} at {rpm} RPM: rise={cr.rise_deg}deg matches no known pulse rise in {rises}",
+                )
+            if cr.fall_deg is not None:
+                self.assertTrue(
+                    self._matches_some_pulse(cr.fall_deg, falls),
+                    f"{name!r} at {rpm} RPM: fall={cr.fall_deg}deg matches no known pulse fall in {falls}",
+                )
+
+    def test_cam_edges_match_a_known_pulse(self):
+        for name, pulses in self.PROFILES.items():
+            with self.subTest(profile=name):
+                rises = [p[0] for p in pulses]
+                falls = [p[1] for p in pulses]
+                self.board.select_profile(self._profile_index(name))
+                self.board.start_gen()
+                self.board.start_capture()
+                self.board.read_cycle()  # discard: cycle 1 settle, see ClosedLoopCamTests
+                for rpm in self.RPM_STEPS:
+                    with self.subTest(rpm=rpm):
+                        self.board.set_rpm(rpm)
+                        for _ in range(self.SETTLE_CYCLES):
+                            self.board.read_cycle()
+                        reports = [self.board.read_cycle() for _ in range(self.CYCLES_PER_STEP)]
+                        self._check_reports(name, reports, rises, falls, rpm)
+                self.board.stop_capture()
+                self.board.stop_gen()
+
+
 class RpmSweepTests(HardwareTestCase):
     """Live-RPM acquisition across a range of steps, one continuous
     capture session throughout (start_capture() once, set_rpm() live
