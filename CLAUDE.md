@@ -52,20 +52,22 @@ any time — no reset needed to change profile, RPM, or what's running.
 Source layout:
 
 - `profiles.c/.h` — `crankcam_profiles[]`, the selectable trigger-wheel
-  table (ardu-stim-style: name + teeth/missing-teeth + cam angles). Adding
-  a wheel means adding one entry here, nothing else.
+  table (ardu-stim-style: name + teeth/missing-teeth + a cam pulse list).
+  Adding a wheel means adding one entry here, nothing else.
 - `event_table.c/.h` — event-table building against whichever profile
   `select_profile()` last set (`build_crank_events`, `build_cam_events`,
   `fill_buffer_slot_constant`), plus `crank_events[]`/`cam_events[]`/
   `position_cycles[]` buffers sized for the largest profile
-  (`MAX_TEETH_PER_REV`). This is where the RPM-to-cycle-count math lives.
+  (`MAX_TEETH_PER_REV`, `MAX_CAM_PULSES`). This is where the RPM-to-cycle-count
+  math lives.
 - `gen_fire.c/.h` — `configure_ping_pong_channel`, the TX ping-pong DMA
   config for continuous crank/cam generation.
 - `capture_analysis.c/.h` — `capture_buf`/`capture_samples_used` (which
   physical capture buffer to analyze, and how much of it is valid), edge
   finding, angle conversion (`compute_crank_reference`/`convert_to_angle`,
   internal), and `report_pulse_angles` (per-cycle live report, one
-  rise/fall angle per channel).
+  rise/fall angle per channel -- see "Multi-pulse cam profiles" below for
+  what that means on a cam wheel with more than one pulse per cycle).
 - `engine.c/.h` — the state machine: owns the PIO/DMA resources for both
   generation (`pio0`) and capture (`pio1`), claimed once at boot and
   reused across start/stop rather than reclaimed each time. Exposes
@@ -89,11 +91,13 @@ scope-verified (see git history): (a) a finished DMA channel's
 READ_ADDR/TRANS_COUNT sit at "end of buffer, 0 remaining" -- `chain_to`'s
 hardware retrigger reuses those verbatim, it does not restore them, so
 without an explicit rearm every chain-triggered buffer after the first
-pair transferred zero words and the pin froze. (b) cam's whole buffer (3
-events, 6 words) fits inside the SM's 8-word FIFO, so its own DMA
-completion fired almost instantly -- long before the SM had actually
-played the buffer out -- making cam's *own* `chain_to` retrigger far too
-early and race the rearm. Fix: crank rearms itself on its own completion
+pair transferred zero words and the pin froze. (b) cam's whole buffer, at
+the time this was found (a single pulse, 3 events / 6 words -- see
+"Multi-pulse cam profiles" below for why cam buffers can now be much
+bigger), fit inside the SM's 8-word FIFO, so its own DMA completion fired
+almost instantly -- long before the SM had actually played the buffer out
+-- making cam's *own* `chain_to` retrigger far too early and race the
+rearm. Fix: crank rearms itself on its own completion
 IRQ (still self-chained, since its buffer never fits the FIFO so
 completion stays correctly paced by real playback); cam no longer
 self-chains at all (`chain_to` pointing at itself, pico-sdk's documented
@@ -278,6 +282,58 @@ reports rise/fall angle per channel every cycle; tolerance/pass-fail
 comparison against expected angles is left to the client (e.g. the Python
 API) watching that stream.
 
+### Multi-pulse cam profiles
+
+`profiles.c`'s `CrankCamProfile` originally held one `cam_rise_deg`/
+`cam_fall_deg` pair — every profile's cam was a single wide sync window.
+It now holds a `CamPulse[]` list (`profiles.h`) instead, so a profile can
+be a real multi-tooth cam wheel with uneven spacing, not just one window.
+`select_profile()` (`event_table.c`) rounds every pulse's rise/fall to
+the nearest tooth position (same rounding it always did for the one
+window) and asserts the list stays ascending and non-overlapping after
+rounding. `build_cam_events()` walks the list and emits a low/high event
+pair per pulse, skipping a zero-length low segment instead of pushing a
+0-cycle event (`push_event_if_nonempty`) — needed because a pulse can now
+land exactly at position 0 or butt against the previous pulse with no
+gap. `cam_words_total` (mirrors `crank_words_total`) replaces the old
+fixed `CAM_WORDS_TOTAL` everywhere a DMA call needs the cam buffer's
+current word count; `MAX_CAM_PULSES` (12) sizes the static event buffer.
+Three real-world profiles from `Cam_Crank_Signal_Analysis.md` (FAW
+Diesel/CNG iFlexAir 58/7, Perkins iFlexAir 59/11) were added this way —
+see `profiles.c`'s comments for how that doc's TDC-relative (and often
+negative) angles were shifted into this tool's own 0-720° cycle
+convention, and why 10° was chosen as every new pulse's width (the doc
+gives only one edge per pulse, not a width).
+
+Since cam's buffer is no longer always small enough to fit the SM's
+8-word FIFO (see bug (b) above), a multi-pulse cam channel is driven the
+same way a large buffer always was here: explicitly, once per cycle, from
+crank's completion IRQ, never by its own `chain_to` — so a bigger buffer
+doesn't reopen that race.
+
+Testing multi-pulse profiles surfaced a real, pre-existing protocol
+limitation, not a new bug: `report_pulse_angles` (`capture_analysis.c`)
+was written for one pulse per cycle and still only ever reports the
+*first* rising edge and the *first* falling edge it finds while scanning
+a capture buffer in sample order (`find_first_edge`, one call for rising,
+one for falling). With several pulses in one buffer, "first in the
+buffer" depends on the capture window's phase against the generation
+cycle, which pulse that is isn't fixed by the profile, and the reported
+rise and the reported fall can belong to two *different* pulses (measured
+on hardware: Perkins profile reporting a fall angle numerically *before*
+its rise angle, e.g. rise≈18°/fall≈12°, matching pulse 2's rise and pulse
+1's fall respectively). The angle values themselves are still correct
+against tooth-rounded pulse positions; only the (rise, fall) *pairing* on
+one report line can't be trusted for a multi-pulse cam. Reporting more
+than one edge per channel per cycle would need a protocol change, not
+attempted here.
+`python/tests/test_hardware.py`'s `MultiPulseCamTests` (closed-loop, same
+idea as `ClosedLoopCamTests`) checks rise and fall independently against
+the whole pulse list for exactly this reason — see its docstring. It also
+confirmed the still-open whole-session capture dropout (issue (a) above)
+hits these profiles at about the same rate as the pre-existing 60-2
+profile, not made worse by this change.
+
 ## Key constants (firmware/src/event_table.h, firmware/src/capture_analysis.h, firmware/src/engine.h)
 
 Changing the trigger-wheel geometry, pin assignment, or capture parameters
@@ -295,6 +351,13 @@ generation and angle conversion:
   per-buffer DMA word count for the selected profile; every DMA-configure
   call site reads this instead of a compile-time size, since profiles have
   different tooth/missing-teeth counts.
+- `MAX_CAM_PULSES` (12) — upper bound across all `profiles.c` entries'
+  `cam_pulse_count`; sizes `cam_events[]`. `select_profile()` asserts a
+  profile's `cam_pulse_count` against it — raise it if you add a cam wheel
+  with more pulses.
+- `cam_words_total` (runtime, set by `build_cam_events`) — same idea as
+  `crank_words_total`, for the cam buffer; varies with the selected
+  profile's `cam_pulse_count`.
 - `ENGINE_MAX_RPM` (20000), `CAPTURE_MIN_RPM` (1000) — sanity ceiling for
   the `r<n>` command, and the floor `c1` enforces (below it, capture's
   fixed-size buffer can't hold a full cycle -- see `LIVE_MAX_CYCLE_SAMPLES`
