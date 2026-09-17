@@ -325,8 +325,9 @@ class CrankCamGui:
                 continue
             rise, fall = cr.rise_deg, cr.fall_deg
             if rise is None and fall is None:
-                # Edge(s) found but outside any known crank-reference
-                # window -- a real signal, not an absent one.
+                # Edge(s) found but the firmware had no cycle-timebase
+                # reference for their timestamp yet -- a real signal, not
+                # an absent one. See CLAUDE.md; expected to be very rare.
                 self.canvas.create_text((x0 + x1) / 2, y, text="no window", fill="#aaa",
                                          font=("TkDefaultFont", 8), tags="data")
                 continue

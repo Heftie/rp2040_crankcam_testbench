@@ -75,10 +75,11 @@ class ChannelReport:
     # False means the firmware found no rise or fall edge at all on this
     # channel this cycle ("not detected": e.g. an unwired pin). True
     # means at least one edge was found, but rise_deg/fall_deg can still
-    # individually be None if that particular edge's timestamp didn't
-    # fall inside any known crank-reference window ("--" on the wire) --
-    # a different condition (see CLAUDE.md's ch0 window-drift note),
-    # not "no signal".
+    # individually be None if that particular edge's timestamp predated
+    # every cycle-timebase reference the firmware had yet ("--" on the
+    # wire) -- a different condition (see CLAUDE.md), not "no signal".
+    # Expected to be vanishingly rare now that angle comes from the
+    # generation engine's own timebase rather than a decoded crank edge.
     detected: bool
     rise_deg: Optional[float]
     fall_deg: Optional[float]

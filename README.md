@@ -66,33 +66,19 @@ Generation is continuous double-buffered crank/cam output at a constant,
 live-adjustable RPM (two real PIO/DMA hardware bugs around this refill
 path are documented in `CLAUDE.md`). Capture is continuous and
 hardware-gapless: a second PIO program samples 6 input channels
-(GPIO6–11, wire GPIO2→6 and GPIO3→7 for loopback) alongside generation,
-and after every completed 720° cycle prints each channel's rise/fall
-angle (or "not detected") — no pass/fail tolerance in firmware; that's
-left to a client watching the stream (see the Python client below).
-Printing happens in the main loop, not the DMA IRQs, so a slow print
-never stalls generation or capture — it just skips reporting that cycle
-("N cycle(s) skipped").
+(GPIO6–11) alongside generation, and after every completed 720° cycle
+prints each channel's rise/fall angle (or "not detected") — no pass/fail
+tolerance in firmware; that's left to a client watching the stream (see
+the Python client below). Printing happens in the main loop, not the DMA
+IRQs, so a slow print never stalls generation or capture — it just skips
+reporting that cycle ("N cycle(s) skipped").
 
-Known cosmetic limitation, unchanged from the design this replaced:
-capture free-runs on its own DMA chain, independent of generation's, so
-its buffer boundary isn't forced to realign with generation's cycle
-boundary every cycle. Occasional sub-sample phase drift between the two
-can make channel 0 (the crank loopback channel itself) briefly land in
-the wrong reference window and print a nonsense angle. This does not
-affect any other channel — cam and any real ECU channel are computed
-relative to whichever window actually contains them and stay correct
-regardless (verified on hardware: cam held the correct ~120°/300° angle
-across 175/175 cycles at 7000 RPM, including cycles where ch0 showed the
-artifact).
-
-A related bug — a timestamp with no closing crank reference yet (the
-common case for the last-captured revolution in a buffer) could get
-misread as one whole revolution further along than it really was,
-reporting e.g. cam's own 120°/300° pulse as 480°/660° — was fixed in
-`capture_analysis.c`'s `convert_to_angle`/`find_window`. Re-verified on
-hardware: 150/150 cycles clean across 1000–7000 RPM with no 360°-shifted
-reading.
+Angle reference comes from the generation engine's own timebase (when
+each 720° cycle started, and at what RPM), not from decoding a captured
+crank/cam edge — see `CLAUDE.md` for how `engine.c` latches this. No
+capture channel is special and none needs to be wired back to the
+crank/cam outputs; loopback wiring (GPIO2→6, GPIO3→7) is optional, useful
+only as a self-test.
 
 ## Python client
 

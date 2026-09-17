@@ -14,23 +14,22 @@ Per step, holds RPM for --duration seconds and counts:
   - cycles with no valid reference
   - per channel: genuine "not detected" (no rise/fall edge found at all
     -- e.g. an unwired pin) counted separately from "no window" (an edge
-    *was* found but its timestamp didn't fall inside any known crank-
-    reference window, printed as "rise=-- fall=--" on the wire) -- these
-    look identical if conflated (both parse to no angle), but only the
-    former means "nothing there". The latter is ch0's documented,
-    accepted window-drift cosmetic issue (see CLAUDE.md) and is reported
-    but never gates pass/fail.
+    *was* found but its timestamp predated every cycle-timebase
+    reference the firmware had yet, printed as "rise=-- fall=--" on the
+    wire) -- these look identical if conflated (both parse to no angle),
+    but only the former means "nothing there". The latter is now
+    expected to be vanishingly rare (see CLAUDE.md: angle comes from the
+    generation engine's own timebase, not a decoded crank edge) and is
+    reported but never gates pass/fail.
 
-Pass/fail only checks ch0/ch1 (crank/cam, the two channels the default
-loopback wiring drives -- GPIO2->6, GPIO3->7, per CLAUDE.md) for genuine
-not-detected. ch2-5 are unwired by default and always read "not
-detected", so they're reported but never gate pass/fail; pass --channels
-to change which ones do.
+Pass/fail only checks ch0/ch1 by default -- the two channels the default
+loopback wiring drives (GPIO2->6, GPIO3->7, per CLAUDE.md), useful as a
+running self-test, though no channel is structurally special anymore.
+ch2-5 are unwired by default and always read "not detected", so they're
+reported but never gate pass/fail; pass --channels to change which ones
+do.
 
-Default RPM range stops at 7000: ch0's window-drift rate is highly
-session-dependent (observed anywhere from 0% to ~99%, not reliably tied
-to RPM), so raising --stop doesn't buy a cleaner test -- 7000 just keeps
-runs a reasonable length.
+Default RPM range stops at 7000, just to keep runs a reasonable length.
 
 Run with: python -m crankcam.step_test [--port /dev/ttyACM0] [--profile 1]
           [--start 1000] [--stop 7000] [--step 1000] [--duration 3]
@@ -118,7 +117,7 @@ def main(argv=None) -> int:
     ap.add_argument("--port", default="/dev/ttyACM0")
     ap.add_argument("--profile", type=int, default=1, help="1-based profile index")
     ap.add_argument("--start", type=int, default=CAPTURE_MIN_RPM)
-    ap.add_argument("--stop", type=int, default=7000, help="known-good ch0 range; see module docstring")
+    ap.add_argument("--stop", type=int, default=7000)
     ap.add_argument("--step", type=int, default=1000)
     ap.add_argument("--duration", type=float, default=3.0, help="seconds held per RPM step")
     ap.add_argument("--channels", default="0,1", help="comma-separated channel indices to gate pass/fail on")

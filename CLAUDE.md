@@ -110,11 +110,34 @@ sizes the buffers for `CAPTURE_MIN_RPM`, the floor `r<n>` enforces before
 `c1` will start capture. `dma_irq_handler` handles both completion events
 (crank's and capture's) in one combined ISR; the **main loop**
 (`engine_poll_capture`, called from `main()`'s loop, not either ISR) does
-the actual analysis/printing (`compute_crank_reference` +
-`report_pulse_angles`) picked up from `ready_slot` -- keeping `printf`
-out of interrupt context, so a slow print only skips reporting a cycle
-(counted and printed as "N cycle(s) skipped"), never stalls generation or
-capture.
+the actual analysis/printing (`report_pulse_angles`) picked up from
+`ready_slot` -- keeping `printf` out of interrupt context, so a slow
+print only skips reporting a cycle (counted and printed as "N cycle(s)
+skipped"), never stalls generation or capture.
+
+Angle reference is the generation engine's own timebase, not a decoded
+capture-side edge: `engine.c` is the thing driving crank/cam out in the
+first place, so it already knows exactly when each 720° cycle starts and
+how fast it's playing. `dma_irq_handler`'s crank branch latches a
+`CycleBoundary` (`capture_analysis.h`: a `time_us_64()` instant + the
+constant RPM that cycle plays at) every time a cycle boundary fires, into
+a small ring buffer (`cycle_history[CYCLE_HISTORY]` in `engine.c`) --
+`engine_start_gen()` latches the first one directly, since slot 0's first
+cycle starts via `dma_channel_start`/`pio_enable_sm_mask_in_sync`, not a
+chain_to completion. Capture buffers get the same treatment
+(`cap_slot_start_us[]`), latched when the *other* slot's DMA starts via
+chain_to (or directly, for slot 0, in `engine_start_capture()`).
+`engine_poll_capture()` snapshots both (briefly masking `DMA_IRQ_0`, the
+same pattern used elsewhere in this file, so a boundary push mid-copy
+can't be read half-written) and hands them to `capture_analysis.c`'s
+`report_pulse_angles`, which converts each edge's capture-sample index to
+an absolute timestamp and then to an angle via `convert_time_to_angle` --
+a linear elapsed-time/cycle-duration calculation, exact because RPM is
+constant within one cycle by construction (`fill_buffer_slot_constant`).
+No capture channel is special and nothing needs to be wired back to the
+crank/cam outputs for this to work; keeping a few cycle boundaries, not
+just the latest, covers a capture buffer whose independent DMA chain
+happens to straddle a boundary.
 
 Two more real hardware bugs, both in `engine_start_capture`/
 `engine_start_gen`, fixed and scope-verified (see git history): (a) the
@@ -128,8 +151,8 @@ a restart -- often before the channel had even started for real that
 session -- misread it as a genuine completion, corrupting
 `ready_slot`/`produced_cycles` and the DMA's own live write address right
 as the session began. Reproduced on hardware: repeated `c1`/`c0` restarts
-within one still-running `g1` session failed to find a valid crank
-reference almost every time; fixed by explicitly clearing both capture
+within one still-running `g1` session produced garbage-looking angle
+reports almost every time; fixed by explicitly clearing both capture
 channels' `ints0` bits before re-enabling their IRQs. (b)
 `dma_irq_handler`'s capture branch is unconditional (doesn't check
 `capture_running`), so it runs on every crank-completion IRQ regardless
@@ -139,57 +162,44 @@ genuine foreground/ISR register race. Fixed by masking `DMA_IRQ_0` for
 the duration of `engine_start_capture`'s (and, defensively,
 `engine_start_gen`'s) setup.
 
-Still-open issue, NOT fixed: a fresh `g1` immediately followed by `c1`
-(no other capture session in between) finds no valid crank reference for
-the rest of that session roughly half the time -- deterministic per
-session (clean alternation across repeated trials, not random flicker),
-and never self-corrects. Root-caused down to hardware level and isolated
-to the crank signal specifically, not any particular pin: GPIO2 (crank
-output), polled directly with `gpio_get()` right at the source pad,
-always toggles correctly; capture's DMA channel always arms and
-progresses normally (transfer count decrementing right after arm); but
-the loopback-wired crank *input* pin, polled directly with `gpio_get()`
--- bypassing PIO and DMA entirely -- reads a constant stuck level for
-the whole session on the failing half of runs. Swapping the loopback
-wiring (crank moved from its default GPIO2->GPIO6 to GPIO2->GPIO7, cam
-from GPIO3->GPIO7 to GPIO3->GPIO6) moved the same ~50%-of-sessions stuck
-symptom onto GPIO7 with crank, while cam stayed rock solid (2 clean
-transitions every single trial) on GPIO6 -- ruling out a GPIO6-specific
-pad/pull/wire fault and pointing at something in crank's own generation
-path (`engine_start_gen`'s crank SM setup, or `event_gen.pio`'s output
-config) that occasionally leaves the driven signal unable to properly
-reach a downstream receiver, despite reading correctly at its own source
-pad. Needs a scope on the crank output pin itself (not just a same-chip
-`gpio_get()`) during a failing session to see what's actually different
-about the drive in the bad case, or a closer read of `event_gen.pio`'s
-C-SDK init (`pio_gpio_init`/`pio_sm_set_consecutive_pindirs` ordering
-vs. `pio_sm_init`/`pio_enable_sm_mask_in_sync`) for a race that leaves
-output-enable or drive strength in an inconsistent state on some starts.
-Default wiring (GPIO2->GPIO6, GPIO3->GPIO7) should be restored before
-relying on this board for anything other than continuing this
-investigation.
+Historical hardware finding, from before the timebase change above, kept
+for anyone chasing crank/cam signal integrity on the generation side
+itself: a fresh `g1` immediately followed by loopback-wired capture, in
+roughly half of sessions, found the crank *input* pin (GPIO2 looped back,
+polled directly with `gpio_get()`, bypassing PIO/DMA entirely) stuck at a
+constant level for the whole session, while the crank *output* pad
+itself, polled the same way right at the source, always toggled
+correctly, and capture's DMA channel always armed and progressed
+normally. Swapping the loopback wiring (crank moved from its default
+GPIO2->GPIO6 to GPIO2->GPIO7, cam from GPIO3->GPIO7 to GPIO3->GPIO6)
+moved the same symptom onto GPIO7 with crank, while cam stayed rock solid
+on GPIO6 -- ruling out a GPIO6-specific pad/pull/wire fault and pointing
+at something in crank's own generation path (`engine_start_gen`'s crank
+SM setup, or `event_gen.pio`'s output config, e.g. `pio_gpio_init`/
+`pio_sm_set_consecutive_pindirs` ordering vs. `pio_sm_init`/
+`pio_enable_sm_mask_in_sync`) that occasionally leaves the driven signal
+unable to properly reach a downstream receiver despite reading correctly
+at its own source pad. This no longer affects capture's angle reference
+(see above -- it doesn't depend on any loopback signal anymore, decoded
+or otherwise), but the same drive issue, if still present, would still
+affect a real ECU wired to GPIO2/GPIO3. Not re-investigated since
+removing capture's dependency on it; needs a scope on the output pin
+itself (not a same-chip `gpio_get()`) during a failing session to confirm
+whether it's still there.
 
-Known limitation, carried over unchanged from the design this replaced:
-capture's chain is independent of generation's, so a cycle-to-cycle
-rounding remainder in the sample count can slowly drift its buffer
-boundary out of phase with generation's real cycle boundary. This
-occasionally makes channel 0 (crank, the reference channel itself) land
-in the wrong window and print `rise=-- fall=--` instead of an angle --
-cosmetic only: every other channel (cam, and any real ECU channel) is
-computed relative to whichever window actually contains it and stays
-correct regardless, confirmed on hardware across 175/175 cycles.
-Frequency is highly session-dependent and not reliably tied to RPM --
-observed anywhere from 0% to ~99% of cycles within a session, including
-at RPMs well below the ~30%-at-7000-RPM figure this was first
-characterized with, so don't read a specific number here as a bound.
-`python/crankcam/board.py`'s `ChannelReport.detected` distinguishes this
-("detected" true, both `*_deg` fields None) from a channel with no edge
-at all ("detected" false) -- the client used to conflate these into one
-`(None, None)`, which briefly looked like a second, unrelated bug during
-investigation (a printf-vs-DMA-wrap race was suspected and partially
-implemented in engine.c/capture_analysis.c, then reverted once raw-wire
-tracing showed the counts were this same window-drift issue all along;
-not worth re-attempting without new evidence).
+The old edge-decoding scheme's window-drift limitation is gone along with
+the scheme itself: since angle is now computed directly from elapsed time
+against `cycle_history`, not a window found by decoding captured crank
+edges, there's no more discrete window for a timestamp to miss.
+`convert_time_to_angle` only returns the "--"/no-angle sentinel if a
+sample's timestamp predates every known `CycleBoundary`, which shouldn't
+happen once generation has completed even its first cycle boundary latch
+(both `engine_start_gen()` and `engine_start_capture()` latch one
+directly, before any capture data can exist). `python/crankcam/board.py`'s
+`ChannelReport.detected` still distinguishes "no edge at all" (a channel
+that's genuinely unwired) from "an edge was found but its angle came back
+as the sentinel" -- now expected to be vanishingly rare rather than a
+routine, session-dependent artifact.
 
 Both generation and capture share one event-table convention: each event
 is 2 FIFO words (pin state, delay-in-cycles), consumed by the `event_gen`
@@ -247,5 +257,8 @@ generation and angle conversion:
   (shorter) capture doesn't pick up a previous, longer capture's stale
   tail. `engine.c` sets this before calling any of them.
 
-Default hardware setup is loopback: wire GPIO2→GPIO6 (crank) and
-GPIO3→GPIO7 (cam) so capture has known-good data to report on.
+Loopback wiring (GPIO2→GPIO6, GPIO3→GPIO7) is optional, useful as a
+self-test (two channels with known-good signal to check against) -- it's
+not required for anything. Capture's angle reference no longer depends on
+any particular channel being wired to crank/cam; all 6 capture channels
+are plain, equivalent ECU-output channels.

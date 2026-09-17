@@ -35,6 +35,39 @@ static volatile uint32_t target_rpm = 1000; // single 32-bit word: atomic read/w
 static volatile bool gen_running = false;
 static volatile bool capture_running = false;
 
+// Generation's own timebase, replacing captured-crank-edge decoding as
+// the angle reference (see capture_analysis.h's CycleBoundary): a short
+// history of recent 720deg cycle-start instants + the constant RPM each
+// one plays at, latched by dma_irq_handler's crank branch (and once
+// directly by engine_start_gen() for the very first cycle). Keeping a
+// few entries, not just the latest, covers a capture buffer whose
+// independent DMA chain happens to straddle a cycle boundary.
+#define CYCLE_HISTORY 3
+static CycleBoundary cycle_history[CYCLE_HISTORY];
+static uint cycle_history_count = 0;
+
+// RPM each slot's crank buffer was actually built at, carried from fill
+// time to the moment that buffer starts playing (one dma_irq_handler
+// crank-branch call later) -- target_rpm may have changed live in
+// between, so the completing IRQ can't just re-read target_rpm to learn
+// what the buffer that's starting *now* was built for.
+static volatile uint32_t pending_rpm[NUM_BUFFERS];
+
+// Timebase instant each capture slot's buffer started filling, latched
+// the same way as cycle_history (DMA completion IRQ = other slot's
+// chain_to just fired) plus once directly by engine_start_capture() for
+// slot 0.
+static volatile uint64_t cap_slot_start_us[NUM_BUFFERS];
+
+static void push_cycle_boundary(uint64_t start_us, uint32_t rpm) {
+    if (cycle_history_count < CYCLE_HISTORY) {
+        cycle_history[cycle_history_count++] = (CycleBoundary){start_us, rpm};
+        return;
+    }
+    for (uint i = 1; i < CYCLE_HISTORY; i++) cycle_history[i - 1] = cycle_history[i];
+    cycle_history[CYCLE_HISTORY - 1] = (CycleBoundary){start_us, rpm};
+}
+
 // Set by dma_irq_handler() when a capture buffer finishes; consumed by
 // engine_poll_capture(). -1 = nothing new since it was last checked.
 static volatile int ready_slot = -1;
@@ -81,12 +114,20 @@ static void dma_irq_handler(void) {
         if (dma_hw->ints0 & (1u << chan)) {
             dma_hw->ints0 = 1u << chan;
 
+            uint other = slot ^ 1; // NUM_BUFFERS == 2
+
+            // 'other's buffer (built the last time slot's crank
+            // completed, at pending_rpm[other]) starts playing right now
+            // via hardware chain_to -- this instant is the new cycle's
+            // 0deg reference.
+            push_cycle_boundary(time_us_64(), pending_rpm[other]);
+
             fill_buffer_slot_constant(slot, (double)target_rpm);
+            pending_rpm[slot] = target_rpm;
 
             dma_channel_set_read_addr(dma_crank_chan[slot], crank_events[slot], false);
             dma_channel_set_trans_count(dma_crank_chan[slot], crank_words_total, false);
 
-            uint other = slot ^ 1; // NUM_BUFFERS == 2
             dma_channel_set_read_addr(dma_cam_chan[other], cam_events[other], false);
             dma_channel_set_trans_count(dma_cam_chan[other], CAM_WORDS_TOTAL, true);
         }
@@ -98,6 +139,8 @@ static void dma_irq_handler(void) {
             uint32_t samples = samples_for_rpm(target_rpm);
             dma_channel_set_write_addr(dma_capture_chan[slot], live_capture_buf[slot], false);
             dma_channel_set_trans_count(dma_capture_chan[slot], samples, false);
+
+            cap_slot_start_us[slot ^ 1] = time_us_64(); // other slot's capture starts now via chain_to
 
             ready_slot = (int)slot;
             produced_cycles++;
@@ -159,6 +202,9 @@ void engine_start_gen(void) {
 
     fill_buffer_slot_constant(0, (double)target_rpm);
     fill_buffer_slot_constant(1, (double)target_rpm);
+    pending_rpm[0] = target_rpm;
+    pending_rpm[1] = target_rpm;
+    cycle_history_count = 0;
 
     event_gen_program_init(pio_gen, sm_crank, gen_offset, CRANK_PIN, gen_clkdiv);
     event_gen_program_init(pio_gen, sm_cam, gen_offset, CAM_PIN, gen_clkdiv);
@@ -187,6 +233,7 @@ void engine_start_gen(void) {
     dma_channel_start(dma_crank_chan[0]);
     dma_channel_start(dma_cam_chan[0]);
     pio_enable_sm_mask_in_sync(pio_gen, (1u << sm_crank) | (1u << sm_cam));
+    push_cycle_boundary(time_us_64(), target_rpm); // slot 0's cycle starts right now
 
     gen_running = true;
     irq_set_enabled(DMA_IRQ_0, true);
@@ -262,6 +309,7 @@ bool engine_start_capture(void) {
     // starts (same margin rationale as the old one-shot capture test).
     dma_channel_start(dma_capture_chan[0]);
     pio_sm_set_enabled(pio_cap, sm_capture, true);
+    cap_slot_start_us[0] = time_us_64(); // slot 0's capture starts right now
     busy_wait_us(100);
 
     capture_running = true;
@@ -299,11 +347,17 @@ void engine_poll_capture(void) {
     capture_buf = live_capture_buf[slot];
     capture_samples_used = samples_for_rpm(target_rpm);
 
-    double sample_period_ms = 1000.0 / CAPTURE_SAMPLE_HZ;
-    double refs[MAX_REFS];
-    uint n_refs;
-    int rev0_window;
-    bool have_refs = compute_crank_reference(sample_period_ms, refs, &n_refs, &rev0_window);
+    double sample_period_us = 1000000.0 / CAPTURE_SAMPLE_HZ;
+
+    // Snapshot the cycle-boundary history and this slot's start time --
+    // brief DMA_IRQ_0 mask (same pattern used elsewhere in this file) so
+    // a boundary push mid-copy can't be read half-written.
+    irq_set_enabled(DMA_IRQ_0, false);
+    CycleBoundary boundaries[CYCLE_HISTORY];
+    uint n_boundaries = cycle_history_count;
+    for (uint i = 0; i < n_boundaries; i++) boundaries[i] = cycle_history[i];
+    uint64_t capture_start_us = cap_slot_start_us[slot];
+    irq_set_enabled(DMA_IRQ_0, true);
 
     uint32_t skipped = produced_now - consumed_cycles - 1;
     consumed_cycles = produced_now;
@@ -313,8 +367,9 @@ void engine_poll_capture(void) {
         printf("  (%u earlier cycle(s) skipped -- printing fell behind; generation kept running)\n",
                skipped);
     }
-    if (have_refs) {
-        report_pulse_angles(CAPTURE_PIN_COUNT, sample_period_ms, refs, n_refs, rev0_window);
+    if (n_boundaries > 0) {
+        report_pulse_angles(CAPTURE_PIN_COUNT, capture_start_us, sample_period_us,
+                             boundaries, n_boundaries);
     } else {
         printf("  no valid cycle reference this pass\n");
     }

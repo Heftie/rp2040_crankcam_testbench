@@ -5,19 +5,16 @@ rules, cycle-report structure. Needs an actual board connected; skips
 cleanly (with a clear reason) if one isn't reachable, so it's safe to
 run alongside the offline test_board.py suite in any environment.
 
-Two already-known, unfixed hardware issues (see CLAUDE.md) mean this
-suite deliberately does NOT assert on:
-  - read_cycle() always having have_refs=True right after a fresh
-    start_capture() -- roughly half of fresh sessions never find a
-    valid crank reference at all, for the whole session (a real, open
-    bug, not a test flake)
-  - ch0's rise/fall angles always being present -- window-drift
-    cosmetic issue, frequency highly session-dependent, not RPM-tied
-Both are exercised structurally (type/shape checks on whatever comes
-back) rather than for a specific value, so this suite stays a reliable
-regression check against NEW breakage instead of re-flagging those two
-known issues on every run. ch1 (cam) is unaffected by either and IS
-asserted on -- a ch1 failure here is a real regression.
+Angle reference now comes from the generation engine's own timebase
+(CycleBoundary, latched in engine.c) rather than a decoded crank/cam
+capture edge -- see CLAUDE.md. That removed two previously-known,
+unfixed hardware issues this suite used to have to work around (have_refs
+being false for a whole session, and ch0's window-drift cosmetic
+artifact) by making both structurally very rare instead of routine. This
+suite still checks have_refs/channel shape structurally (type checks)
+rather than asserting have_refs is True on every single cycle, since a
+single missed cycle right at start_capture() is still possible in
+principle -- but no longer expects or exempts a whole-session failure.
 
 Run with:
     cd python && python -m unittest discover -s tests -p 'test_hardware.py' -v
@@ -205,7 +202,18 @@ class CycleReportTests(HardwareTestCase):
                         self.assertIsNone(cr.fall_deg)
             else:
                 self.assertEqual(report.channels, {})
-            # not asserting have_refs is ever True -- see module docstring
+
+    def test_have_refs_true_from_first_cycle(self):
+        # Angle reference is generation's own timebase now (CycleBoundary,
+        # see CLAUDE.md), latched synchronously before start_gen()/
+        # start_capture() return -- so have_refs should already be true
+        # on the very first cycle, not just "eventually" the way the old
+        # edge-decoding scheme sometimes needed.
+        self.board.start_gen()
+        self.board.start_capture()
+        for _ in range(20):
+            report = self.board.read_cycle()
+            self.assertTrue(report.have_refs, "no cycle-timebase reference -- see CLAUDE.md")
 
     def test_cycle_numbers_increase_monotonically(self):
         self.board.start_gen()
@@ -217,33 +225,20 @@ class CycleReportTests(HardwareTestCase):
                 self.assertGreater(report.cycle, last)
             last = report.cycle
 
-    def test_default_wiring_channel1_cam_detected(self):
-        # ch1 (cam) itself is unaffected by both known open bugs (crank-
-        # reference loss and ch0 window-drift are crank-specific) -- but
-        # when have_refs is False, the firmware reports NO channel data
-        # at all that cycle, ch1 included, so only cycles that actually
-        # got a reference are meaningful here. A session that never gets
-        # one (the other known open bug -- see CLAUDE.md) makes this
-        # inconclusive, not a ch1 regression.
+    def test_default_wiring_channel1_detected(self):
+        # ch1 is unwired by pin choice alone -- it's only "cam" by
+        # default loopback wiring (GPIO3->6), not because capture treats
+        # it specially. A miss here is a real regression.
         self.board.start_gen()
         self.board.start_capture()
         found = False
-        saw_have_refs = False
         for _ in range(20):
             report = self.board.read_cycle()
-            if not report.have_refs:
-                continue
-            saw_have_refs = True
             cr = report.channels.get(1)
             if cr is not None and cr.detected:
                 found = True
                 break
-        if not saw_have_refs:
-            self.skipTest(
-                "have_refs was never True in 20 cycles -- known open crank-reference "
-                "bug (see CLAUDE.md), not a ch1 regression; rerun for a fresh session"
-            )
-        self.assertTrue(found, "ch1 (cam) never detected across cycles with have_refs=True")
+        self.assertTrue(found, "ch1 (default loopback-wired) never detected across cycles")
 
 
 class RpmSweepTests(HardwareTestCase):
@@ -254,9 +249,7 @@ class RpmSweepTests(HardwareTestCase):
     bug (see git history): a client draining too slowly let cycle
     reports back up and a read land mid-line, corrupting the parse.
     Checks protocol integrity only -- parseable lines, no cycle-number
-    gaps -- not have_refs/window-match content, which are the two
-    separate known-open hardware bugs covered (and exempted) elsewhere
-    in this file."""
+    gaps -- not have_refs/angle content, which CycleReportTests covers."""
 
     RPM_STEPS = (1000, 2000, 3000, 4000, 5000, 6000, 7000)
     CYCLES_PER_STEP = 5
