@@ -75,10 +75,13 @@ reporting that cycle ("N cycle(s) skipped").
 
 Angle reference comes from the generation engine's own timebase (when
 each 720° cycle started, and at what RPM), not from decoding a captured
-crank/cam edge — see `CLAUDE.md` for how `engine.c` latches this. No
-capture channel is special and none needs to be wired back to the
-crank/cam outputs; loopback wiring (GPIO2→6, GPIO3→7) is optional, useful
-only as a self-test.
+crank/cam edge — see `CLAUDE.md` for how `engine.c` latches this (and a
+real FIFO-backlog timing bug found and fixed while verifying it on
+hardware). No capture channel is special and none needs to be wired back
+to the crank/cam outputs; loopback wiring (GPIO2→6, GPIO3→7) is optional,
+useful only as a self-test. Verified on hardware: cam's known-true
+120°/300° pulse read back within ~0.5° across 1000–7000 RPM on the 60-2
+profile.
 
 ## Python client
 

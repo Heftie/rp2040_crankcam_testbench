@@ -139,6 +139,33 @@ crank/cam outputs for this to work; keeping a few cycle boundaries, not
 just the latest, covers a capture buffer whose independent DMA chain
 happens to straddle a boundary.
 
+Another real hardware bug, found and fixed while bringing up the timebase
+change above: latching a cycle boundary's timestamp at the instant crank's
+DMA channel reports "complete" is too early, and by a constant amount, not
+jitter. `event_gen_program_init()` joins each generation SM's TX FIFO
+(`PIO_FIFO_JOIN_TX`), doubling it to 8 words; the DMA channel's dreq only
+fires on FIFO space, so in steady playback the FIFO sits essentially
+always full, and "DMA complete" only means the *last word was accepted
+into the FIFO*, not that the SM has actually shifted it out to the pin
+yet. Reproduced on hardware: cam's known-true 120°/300° pulse (this
+firmware generates cam itself, so its real angles are known independent
+of any capture) read back a constant +24.2° at 3000 RPM on the 60-2
+profile, stable cycle to cycle, present from the second reported cycle
+onward (the very first cycle is latched directly at
+`pio_enable_sm_mask_in_sync`, not via a DMA completion, so it alone was
+unaffected). Root-caused by walking the buffer's actual event structure:
+DMA finishes pushing the last event once the SM has *started* consuming
+the event 4 positions earlier (FIFO capacity in events), so at completion
+time 5 events' worth of playback -- the 4 not-yet-touched plus the one the
+SM just began -- are still queued ahead of the true cycle boundary, not
+4. `crank_tail_backlog_us()` in `engine.c` sums those last 5 events' real
+durations (`CRANK_FIFO_BACKLOG_WORDS` = 10 words) from `crank_events[slot]`
+-- read before `fill_buffer_slot_constant()` overwrites it -- and adds
+that to the latched timestamp. Verified on hardware after the fix: cam
+read within ~0.5° of 120°/300° across 1000-7000 RPM on the 60-2 profile,
+consistent with `CAPTURE_SAMPLE_HZ` quantization noise (10us/sample), not
+a residual systematic offset.
+
 Two more real hardware bugs, both in `engine_start_capture`/
 `engine_start_gen`, fixed and scope-verified (see git history): (a) the
 RP2040's per-channel `dma_hw->ints0` completion flag is sticky --

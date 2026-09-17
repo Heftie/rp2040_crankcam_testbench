@@ -68,6 +68,33 @@ static void push_cycle_boundary(uint64_t start_us, uint32_t rpm) {
     cycle_history[CYCLE_HISTORY - 1] = (CycleBoundary){start_us, rpm};
 }
 
+// event_gen_program_init() joins each generation SM's TX FIFO
+// (PIO_FIFO_JOIN_TX), doubling it to 8 words = 4 events. The crank DMA
+// channel's dreq only fires on FIFO space, so in steady playback the
+// FIFO sits essentially always full -- meaning at the instant a crank
+// channel's *last* word is accepted ("DMA complete"), up to
+// CRANK_FIFO_BACKLOG_WORDS worth of that same buffer's trailing events
+// are still queued, not yet actually shifted out to the pin. Measured on
+// hardware: without this compensation, every cycle boundary latched from
+// this IRQ (all but the very first, which is latched directly at
+// pio_enable_sm_mask_in_sync -- no DMA involved, no backlog) came in
+// early by a constant amount, e.g. a fixed ~24deg phase offset on cam's
+// 120/300deg pulse at 3000 RPM on a 60-2 profile. This sums the still-
+// queued trailing events' real durations (from the buffer that's about
+// to be overwritten, so this must run before fill_buffer_slot_constant()
+// touches it) and converts to microseconds via f_pio_hz.
+#define CRANK_FIFO_BACKLOG_WORDS 10u
+
+static uint64_t crank_tail_backlog_us(uint slot) {
+    uint32_t total = crank_words_total;
+    uint32_t start = (total > CRANK_FIFO_BACKLOG_WORDS) ? total - CRANK_FIFO_BACKLOG_WORDS : 0;
+    uint32_t sum_cycles = 0;
+    for (uint32_t i = start; i + 1 < total; i += 2) {
+        sum_cycles += crank_events[slot][i + 1] + EVENT_MIN_CYCLES;
+    }
+    return (uint64_t)((double)sum_cycles / f_pio_hz * 1e6 + 0.5);
+}
+
 // Set by dma_irq_handler() when a capture buffer finishes; consumed by
 // engine_poll_capture(). -1 = nothing new since it was last checked.
 static volatile int ready_slot = -1;
@@ -118,9 +145,12 @@ static void dma_irq_handler(void) {
 
             // 'other's buffer (built the last time slot's crank
             // completed, at pending_rpm[other]) starts playing right now
-            // via hardware chain_to -- this instant is the new cycle's
-            // 0deg reference.
-            push_cycle_boundary(time_us_64(), pending_rpm[other]);
+            // via hardware chain_to -- this instant, plus however much
+            // of slot's own just-completed buffer is still backlogged in
+            // the FIFO (see crank_tail_backlog_us()), is the new cycle's
+            // 0deg reference. Must run before fill_buffer_slot_constant()
+            // below overwrites crank_events[slot].
+            push_cycle_boundary(time_us_64() + crank_tail_backlog_us(slot), pending_rpm[other]);
 
             fill_buffer_slot_constant(slot, (double)target_rpm);
             pending_rpm[slot] = target_rpm;
